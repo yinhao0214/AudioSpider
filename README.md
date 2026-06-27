@@ -1,0 +1,282 @@
+# AudioSpider
+
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+面向语音大模型训练的全网语音音频搜集和批量下载系统。自动从播客、有声书、B站等来源发现语音 URL，支持增量爬取、内容去重、并发下载。
+
+## 架构
+
+```
+AudioSpider/
+├── discover.py         # 自动发现新源（搜索 Apple Podcasts，扩充 URL 池）
+├── collect.py          # URL 搜集器（从已有固定源抓取最新音频链接）
+├── main.py             # 音频下载器（从数据库取 URL 并下载）
+├── config.py           # 全局配置（目录、超时、爬虫参数）
+├── storage.py          # SQLite 存储（URL 去重、状态追踪、指纹去重）
+├── downloader.py       # 异步下载引擎（并发、断点续传、元信息生成）
+├── anti_crawler.py     # 反爬工具（UA 轮换、延时、代理、限速）
+├── db_viewer.py        # 数据库交互式查看器
+├── spiders/            # 各来源爬虫
+│   ├── base.py         # 爬虫基类
+│   ├── xiaoyuzhou.py   # 小宇宙播客（CDN 直链）
+│   ├── ximalaya.py     # 喜马拉雅（移动端 API）
+│   ├── podcast_rss.py  # 通用播客 RSS
+│   ├── librivox.py     # LibriVox 有声书
+│   └── bilibili.py     # B站（DASH 音频流）
+└── requirements.txt    # Python 依赖
+```
+
+运行后自动生成：
+
+```
+├── downloads/          # 下载的音频文件（按 来源/分类 分目录）
+├── logs/               # 运行日志
+└── audiospider.db      # SQLite 数据库
+```
+
+## 工作流
+
+**三个独立程序，按需运行：**
+
+1. **`discover.py`** — 自动发现新源。通过 Apple Podcasts 搜索 API，用关键词搜索全网播客，拿到 RSS 地址并解析出音频 URL 入库。相当于"开拓新领地"。
+2. **`collect.py`** — 从已有固定源抓取。只跑 `config.py` 里配置好的来源（小宇宙、喜马拉雅等），抓取最新音频。相当于"巡逻老地盘"。
+3. **`main.py`** — 消费下载。从数据库取待下载 URL，批量下载到本地。
+
+```
+discover.py → [搜索全网播客] ─┐
+                              ├→ audiospider.db → [取URL] → main.py → downloads/
+collect.py  → [抓已有来源]  ──┘
+```
+
+## 快速开始
+
+```bash
+# 1. 克隆项目
+git clone https://github.com/your-username/AudioSpider.git
+cd AudioSpider
+
+# 2. 创建虚拟环境
+python3 -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
+
+# 3. 安装依赖
+pip install -r requirements.txt
+
+# 4. 自动发现播客源（首次运行，大量扩充 URL 池）
+python discover.py
+
+# 5. 下载音频
+python main.py --limit 100
+```
+
+## 用法
+
+### 自动发现新源（discover.py）
+
+通过 Apple Podcasts Search API 按关键词搜索播客，自动提取 RSS 地址并解析音频 URL 入库。无需手动查找 RSS 地址。
+
+```bash
+# 用默认关键词搜索（相声、播客、有声书、演讲等 20+ 个关键词）
+python discover.py
+
+# 自定义关键词
+python discover.py --keywords 脱口秀 TED 历史故事
+
+# 每个关键词取前 100 个播客（默认 50）
+python discover.py --top 100
+
+# 每天自动搜索一次
+python discover.py --loop --interval 86400
+
+# 查看已发现的所有播客源
+python discover.py --list-feeds
+```
+
+### 从固定源搜集 URL（collect.py）
+
+`collect.py` 从 `config.py` 中配置好的**固定来源**抓取音频链接，包含以下 5 个爬虫：
+
+这些源是**有限的**，跑几次就会全部入库。它的主要价值是**定期抓增量更新**（比如播客出了新一期）。
+
+#### 1. 小宇宙播客（xiaoyuzhou）
+
+解析播客页面 HTML，提取 M4A CDN 直链。配置在 `config.py` → `discover_urls`，当前包含 6 个播客，每个最多抓 30 集：
+
+- 大内密谈、日谈公园、忽左忽右、故事FM、无人知晓、不合时宜
+
+> 想加更多小宇宙播客？把播客页面 URL 中的 `/podcast/xxx` 路径添加到 `config.py` 的 `discover_urls` 列表即可。
+
+#### 2. 通用播客 RSS（podcast_rss）
+
+解析 RSS XML 中的 `<enclosure>` 标签获取音频直链。配置在 `config.py` → `feeds`，当前包含 4 个 RSS 地址，每个最多取 50 集。
+
+> 想加更多 RSS？把播客的 RSS 地址添加到 `config.py` 的 `feeds` 列表即可。
+
+#### 3. 喜马拉雅（ximalaya）
+
+通过移动端 API 逐个获取音频直链。种子 track ID 配置在 `spiders/ximalaya.py` 的 `SEED_TRACK_IDS` 列表中。
+
+> 喜马拉雅反爬较强，产量取决于种子列表质量。可在 `spiders/ximalaya.py` 中添加更多 track ID。
+
+#### 4. LibriVox 有声书（librivox）
+
+调用 LibriVox 公开 API 获取公版有声书章节链接。音频托管在 Archive.org 上。
+
+#### 5. B站（bilibili）
+
+通过 B站搜索 API 按关键词搜索语音类长视频，提取每个视频的 DASH 音频流（M4A 格式）。
+
+> 想加更多搜索词？修改 `config.py` 中 `bilibili` → `search_keywords` 列表即可。
+
+```bash
+# 运行全部爬虫
+python collect.py
+
+# 只运行指定爬虫
+python collect.py --spiders xiaoyuzhou podcast_rss
+
+# 每小时自动搜集一次（适合抓播客更新）
+python collect.py --loop --interval 3600
+```
+
+### discover.py vs collect.py
+
+| | `discover.py` | `collect.py` |
+|---|---|---|
+| **做什么** | 搜索全网，发现新的播客源 | 从已有固定源抓取音频链接 |
+| **数据来源** | Apple Podcasts 搜索 API | `config.py` 中配置的 5 个固定爬虫 |
+| **URL 数量** | 无上限，换关键词就有新结果 | 单次约 1500 条 |
+| **适合场景** | 大量扩充 URL 池 | 定期检查已有播客的更新 |
+| **类比** | "去新书店找书" | "去常去的书店看有没有上新" |
+
+### 下载音频（main.py）
+
+```bash
+# 下载 50 条（默认）
+python main.py
+
+# 下载 200 条
+python main.py --limit 200
+
+# 指定来源
+python main.py --source xiaoyuzhou
+
+# 10 并发下载
+python main.py --workers 10
+
+# 持续消费下载（每 60 秒检查一次）
+python main.py --loop
+
+# 查看统计
+python main.py stats
+
+# 为已下载文件补生成元信息 JSON
+python main.py fix-meta
+```
+
+### 数据库查看（db_viewer.py）
+
+```bash
+# 交互式查看
+python db_viewer.py
+
+# 数据库概览
+python db_viewer.py overview
+
+# 按来源/状态筛选
+python db_viewer.py source bilibili -n 10
+python db_viewer.py status done -n 20
+
+# 查看指定记录
+python db_viewer.py id 42
+```
+
+### 日常使用
+
+```bash
+# 首次：大量发现新源
+python discover.py
+
+# 日常：从已有源抓增量 + 下载
+python collect.py && python main.py --limit 100
+
+# 偶尔：用新关键词扩充源
+python discover.py --keywords 英语学习 科技播客
+
+# 后台持续运行
+python collect.py --loop &          # 终端1: 定期抓已有源
+python main.py --loop --workers 8 & # 终端2: 持续下载
+```
+
+## 数据来源
+
+| 来源 | 类型 | 下载方式 | 说明 |
+|------|------|----------|------|
+| 小宇宙 | 播客 | CDN 直链 | 最稳定，M4A 格式 |
+| 通用 RSS | 播客 | 直链 | 标准协议，覆盖面广 |
+| 喜马拉雅 | 有声书/播客 | 移动端 API | MP3/AAC/M4A 格式 |
+| LibriVox | 有声书 | Archive.org | 英文公版有声书 |
+| B站 | 有声书/相声/评书/演讲 | DASH 音频流 | M4A 格式，内容量大 |
+
+### 添加新来源
+
+在 `spiders/` 目录新建爬虫类继承 `BaseSpider`，实现 `crawl()` 方法返回 `AudioRecord` 列表，然后在 `collect.py` 的 `ALL_SPIDERS` 中注册即可。
+
+## 去重机制
+
+三层去重，避免重复下载：
+
+1. **URL 去重** — 数据库 UNIQUE 约束
+2. **source_id 去重** — 用源站唯一 ID 做增量爬取判断
+3. **内容指纹去重** — 下载后计算 MD5，跨源去重
+
+## 下载目录结构
+
+```
+downloads/
+├── xiaoyuzhou/
+│   └── 播客/
+│       ├── 不开玩笑 Jokes Aside_xxx.m4a
+│       └── 不开玩笑 Jokes Aside_xxx.json   ← 元信息
+├── podcast_rss/
+│   └── 播客/
+│       └── ...
+├── ximalaya/
+│   ├── 有声书/
+│   └── 亲子/
+├── bilibili/
+│   ├── 有声书/
+│   ├── 相声/
+│   └── 评书/
+└── librivox/
+    └── ...
+```
+
+每个音频文件旁生成同名 `.json` 元信息文件，包含 title、source、category、language、duration 等字段。
+
+## 反爬策略
+
+- 随机 User-Agent 轮换
+- 请求间随机延时
+- 指数退避重试
+- 令牌桶限速
+- Referer 头伪装
+- 代理支持（在 `config.py` 中配置 `PROXY_LIST`）
+
+## 统计
+
+运行 `python main.py stats` 查看：
+
+- URL 总数、各状态数量
+- 按来源分类的待下载/已完成/失败数
+- 最近下载的文件列表
+- 磁盘总用量
+
+## 免责声明
+
+本项目仅供学习和研究使用。使用者应遵守相关网站的服务条款和版权法律。请勿将爬取的数据用于未经授权的商业用途。对因使用本工具产生的任何法律问题，项目作者不承担任何责任。
+
+## License
+
+本项目基于 [MIT License](LICENSE) 开源。
