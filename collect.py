@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Hao Yin. All rights reserved.
+
 """URL 搜集器 — 负责发现和扩充待下载的语音 URL 池
 
 每次需要扩充时直接运行：

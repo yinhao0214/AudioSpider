@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hao Yin. All rights reserved.
+
 """AudioSpider 数据库查看器 —— 查看 audiospider.db 中每条记录的完整细节"""
 
 import sqlite3

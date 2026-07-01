@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Hao Yin. All rights reserved.
+
 """音频下载器 — 从数据库取待下载 URL 并批量下载
 
 用法:

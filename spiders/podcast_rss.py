@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hao Yin. All rights reserved.
+
 """通用播客 RSS 爬虫 - 任意播客 RSS 源
 
 RSS 是最干净的播客分发协议，<enclosure> 直接包含音频直链。

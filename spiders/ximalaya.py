@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hao Yin. All rights reserved.
+
 """喜马拉雅爬虫 - 国内最大音频平台
 
 策略：

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hao Yin. All rights reserved.
+
 """爬虫基类"""
 
 import logging

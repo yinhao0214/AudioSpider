@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hao Yin. All rights reserved.
+
 """LibriVox 爬虫 - 公共领域有声书，提供免费 API，无反爬"""
 
 import aiohttp

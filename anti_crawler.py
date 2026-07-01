@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hao Yin. All rights reserved.
+
 """反爬虫工具集：UA轮换、请求伪装、随机延迟、重试退避、代理管理"""
 
 import asyncio

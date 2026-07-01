@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hao Yin. All rights reserved.
+
 """小宇宙播客爬虫 - 中文播客第一平台
 
 发现逻辑：

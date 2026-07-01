@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hao Yin. All rights reserved.
+
 """SQLite 存储：URL 去重、下载状态追踪、增量爬取标记、内容指纹"""
 
 import hashlib

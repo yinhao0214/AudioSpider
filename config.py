@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hao Yin. All rights reserved.
+
 import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

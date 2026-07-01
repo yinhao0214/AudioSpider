@@ -1,4 +1,6 @@
-"""批量下载器：连接池复用、并发可调、断点续传、进度条、内容指纹去重"""
+# Copyright (c) 2026 Hao Yin. All rights reserved.
+
+"""批量下载器：连接池复用、并发可调、断点续传、进度条、内容指纹去重、自动格式转换"""
 
 import asyncio
 import hashlib
@@ -6,6 +8,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 from urllib.parse import urlparse, unquote
 
 import aiohttp
@@ -101,6 +104,45 @@ async def _resolve_bilibili_url(session: aiohttp.ClientSession, source_id: str) 
         return ""
 
 
+TARGET_FORMAT = {
+    "ext": ".opus",
+    "ffmpeg_args": [
+        "-vn", "-ar", "24000", "-ac", "1",
+        "-c:a", "libopus", "-b:a", "32k",
+    ],
+}
+
+
+def convert_to_target(filepath: str) -> str | None:
+    """将音频文件转换为目标格式 (Opus 24kHz mono 32kbps)，返回新路径；失败返回 None"""
+    target_ext = TARGET_FORMAT["ext"]
+    base = os.path.splitext(filepath)[0]
+    tmp_output = base + ".tmp_conv" + target_ext
+    final_output = base + target_ext
+
+    try:
+        cmd = ["ffmpeg", "-y", "-i", filepath, *TARGET_FORMAT["ffmpeg_args"], tmp_output]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+
+        if proc.returncode != 0 or not os.path.exists(tmp_output) or os.path.getsize(tmp_output) == 0:
+            if os.path.exists(tmp_output):
+                os.remove(tmp_output)
+            return None
+
+        if filepath.lower() != final_output.lower():
+            os.remove(filepath)
+        if os.path.exists(final_output) and final_output != filepath:
+            os.remove(final_output)
+        os.rename(tmp_output, final_output)
+        return final_output
+
+    except Exception as e:
+        logger.warning(f"格式转换失败 {filepath}: {e}")
+        if os.path.exists(tmp_output):
+            os.remove(tmp_output)
+        return None
+
+
 class Downloader:
     def __init__(self, storage: Storage, max_workers: int | None = None):
         self.storage = storage
@@ -188,6 +230,14 @@ class Downloader:
                         return
 
                     self.storage.set_content_hash(item["url"], content_hash)
+
+                    converted_path = await asyncio.to_thread(convert_to_target, filepath)
+                    if converted_path:
+                        filepath = converted_path
+                        filename = os.path.basename(filepath)
+                    else:
+                        logger.warning(f"{progress} 格式转换失败, 保留原始文件: {filename}")
+
                     self.storage.update_status(item["url"], "done", filepath)
                     self.stats["success"] += 1
                     size_mb = os.path.getsize(filepath) / 1024 / 1024

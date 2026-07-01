@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Hao Yin. All rights reserved.
+
 """B站爬虫 — 提取视频中的音频流（有声书、评书、相声、演讲等）
 
 策略：

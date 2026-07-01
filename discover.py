@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Hao Yin. All rights reserved.
+
 """自动发现新的语音源 — 搜索播客目录，自动扩充 URL 池
 
 核心策略：
