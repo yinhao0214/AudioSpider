@@ -16,6 +16,7 @@ AudioSpider/
 ├── storage.py          # SQLite 存储（URL 去重、状态追踪、指纹去重）
 ├── downloader.py       # 异步下载引擎（并发、断点续传、元信息生成）
 ├── anti_crawler.py     # 反爬工具（UA 轮换、延时、代理、限速）
+├── convert_audio.py    # 批量音频格式转换（→ Opus 24kHz mono 32kbps）
 ├── db_viewer.py        # 数据库交互式查看器
 ├── spiders/            # 各来源爬虫
 │   ├── base.py         # 爬虫基类
@@ -45,7 +46,7 @@ AudioSpider/
 
 ```
 discover.py → [搜索全网播客] ─┐
-                              ├→ audiospider.db → [取URL] → main.py → downloads/
+                              ├→ audiospider.db → [取URL] → main.py → [下载+转码] → downloads/ (*.opus)
 collect.py  → [抓已有来源]  ──┘
 ```
 
@@ -234,6 +235,24 @@ python db_viewer.py duration
     全部记录             28457 条  总时长 15470:48:15
 ```
 
+### 格式转换（convert_audio.py）
+
+下载器会自动将音频转为统一格式（见下方「音频格式」章节）。对于早期下载的、尚未转换的文件，可用批量转换脚本补转：
+
+```bash
+# 预览哪些文件需要转换
+python convert_audio.py --dry-run
+
+# 正式转换（4 并发，默认）
+python convert_audio.py
+
+# 8 并发加速
+python convert_audio.py --workers 8
+
+# 指定目录
+python convert_audio.py --dir downloads/podcast_rss
+```
+
 ### 日常使用
 
 ```bash
@@ -265,6 +284,34 @@ python main.py --loop --workers 8 & # 终端2: 持续下载
 
 在 `spiders/` 目录新建爬虫类继承 `BaseSpider`，实现 `crawl()` 方法返回 `AudioRecord` 列表，然后在 `collect.py` 的 `ALL_SPIDERS` 中注册即可。
 
+## 音频格式
+
+所有音频统一转为面向语音模型训练的标准格式：
+
+| 参数 | 值 |
+|------|-----|
+| **编码** | Opus (libopus) |
+| **容器** | `.opus` |
+| **采样率** | 24kHz |
+| **通道** | 单声道 (mono) |
+| **码率** | 32kbps |
+
+选型依据：
+
+- **Opus 32kbps** — 同码率下音质优于 MP3/AAC，是 WenetSpeech 等大规模语音数据集的标准选择
+- **24kHz** — 现代 TTS 模型（VALL-E、ChatTTS 等）的主流训练采样率，完整覆盖人声频率范围
+- **单声道** — 语音合成只需单通道
+- **存储效率** — 1 万小时约 140GB，相比 WAV (1.6TB) 节省约 91%
+
+训练时用 `torchaudio.load()` 直接加载，自动解码为 24kHz PCM：
+
+```python
+import torchaudio
+wav, sr = torchaudio.load("audio.opus")  # sr=24000, wav.shape=[1, N]
+```
+
+下载流程中自动完成格式转换（需要系统安装 `ffmpeg`），也可用 `convert_audio.py` 对已有文件批量补转。
+
 ## 去重机制
 
 三层去重，避免重复下载：
@@ -279,7 +326,7 @@ python main.py --loop --workers 8 & # 终端2: 持续下载
 downloads/
 ├── xiaoyuzhou/
 │   └── 播客/
-│       ├── 不开玩笑 Jokes Aside_xxx.m4a
+│       ├── 不开玩笑 Jokes Aside_xxx.opus
 │       └── 不开玩笑 Jokes Aside_xxx.json   ← 元信息
 ├── podcast_rss/
 │   └── 播客/
