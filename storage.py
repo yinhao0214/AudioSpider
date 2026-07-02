@@ -141,19 +141,53 @@ class Storage:
         conn.commit()
         return conn.total_changes - before
 
-    def get_pending(self, limit: int = 50, source: str | None = None) -> list[dict]:
+    def get_pending(
+        self,
+        limit: int = 50,
+        source: str | None = None,
+        category: str | None = None,
+        per_source: bool = False,
+        per_category: bool = False,
+    ) -> list[dict]:
         conn = self._get_conn()
+
+        if per_source:
+            return self._get_pending_per_group("source", limit)
+        if per_category:
+            return self._get_pending_per_group("category", limit)
+
+        conditions = ["status='pending'"]
+        params: list = []
         if source:
-            rows = conn.execute(
-                "SELECT * FROM audio_urls WHERE status='pending' AND source=? ORDER BY id LIMIT ?",
-                (source, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM audio_urls WHERE status='pending' ORDER BY id LIMIT ?",
-                (limit,),
-            ).fetchall()
+            conditions.append("source=?")
+            params.append(source)
+        if category:
+            conditions.append("category=?")
+            params.append(category)
+
+        where = " AND ".join(conditions)
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT * FROM audio_urls WHERE {where} ORDER BY id LIMIT ?", params
+        ).fetchall()
         return [dict(r) for r in rows]
+
+    def _get_pending_per_group(self, group_col: str, limit_per_group: int) -> list[dict]:
+        """每个分组取 limit 条，合并返回"""
+        conn = self._get_conn()
+        groups = conn.execute(
+            f"SELECT DISTINCT {group_col} FROM audio_urls WHERE status='pending' AND {group_col}!=''"
+        ).fetchall()
+
+        results = []
+        for row in groups:
+            group_val = row[0]
+            rows = conn.execute(
+                f"SELECT * FROM audio_urls WHERE status='pending' AND {group_col}=? ORDER BY id LIMIT ?",
+                (group_val, limit_per_group),
+            ).fetchall()
+            results.extend(dict(r) for r in rows)
+        return results
 
     def update_status(self, url: str, status: str, local_path: str = ""):
         conn = self._get_conn()

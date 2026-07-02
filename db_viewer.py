@@ -75,7 +75,8 @@ def show_overview(conn: sqlite3.Connection):
     print()
 
 
-def show_all_records(conn: sqlite3.Connection, source_filter: str = "", status_filter: str = "", limit: int = 0):
+def show_all_records(conn: sqlite3.Connection, source_filter: str = "", status_filter: str = "",
+                     category_filter: str = "", limit: int = 0):
     where = "WHERE 1=1"
     filter_params: list = []
     if source_filter:
@@ -84,6 +85,9 @@ def show_all_records(conn: sqlite3.Connection, source_filter: str = "", status_f
     if status_filter:
         where += " AND status = ?"
         filter_params.append(status_filter)
+    if category_filter:
+        where += " AND category = ?"
+        filter_params.append(category_filter)
 
     total = conn.execute(f"SELECT COUNT(*) FROM audio_urls {where}", filter_params).fetchone()[0]
 
@@ -189,6 +193,95 @@ def show_duration_stats(conn: sqlite3.Connection):
     print(f"    全部记录             {row['cnt']:>5} 条  总时长 {fmt_duration(row['sec'])}")
 
 
+def show_category_menu(conn: sqlite3.Connection):
+    rows = conn.execute(
+        "SELECT category, COUNT(*) AS cnt, "
+        "COALESCE(SUM(duration), 0) AS total_sec, "
+        "COALESCE(SUM(file_size), 0) AS total_size "
+        "FROM audio_urls WHERE category != '' "
+        "GROUP BY category ORDER BY cnt DESC"
+    ).fetchall()
+    if not rows:
+        print("  没有分类数据。")
+        return
+
+    print(f"\n{'=' * 60}")
+    print("  按分类浏览")
+    print(f"{'=' * 60}\n")
+    cats = []
+    for i, r in enumerate(rows, 1):
+        cats.append(r["category"])
+        print(f"    {i:>2}. {r['category']:<16s}  {r['cnt']:>5} 条  "
+              f"时长 {fmt_duration(r['total_sec']):>10s}  "
+              f"大小 {fmt_size(r['total_size']):>10s}")
+
+    uncategorized = conn.execute(
+        "SELECT COUNT(*) FROM audio_urls WHERE category = '' OR category IS NULL"
+    ).fetchone()[0]
+    if uncategorized:
+        print(f"\n    (未分类: {uncategorized} 条)")
+
+    print(f"\n    0. 返回上级菜单")
+    sel = input("\n  输入编号查看该分类详情> ").strip()
+    if not sel.isdigit():
+        return
+    idx = int(sel)
+    if idx == 0:
+        return
+    if idx < 1 or idx > len(cats):
+        print("  无效编号。")
+        return
+
+    cat = cats[idx - 1]
+    show_category_detail(conn, cat)
+
+
+def show_category_detail(conn: sqlite3.Connection, category: str):
+    stats = conn.execute(
+        "SELECT COUNT(*) AS cnt, "
+        "COALESCE(SUM(duration), 0) AS total_sec, "
+        "COALESCE(SUM(file_size), 0) AS total_size, "
+        "COALESCE(SUM(CASE WHEN status='done' THEN 1 ELSE 0 END), 0) AS done_cnt, "
+        "COALESCE(SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END), 0) AS pending_cnt, "
+        "COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), 0) AS failed_cnt "
+        "FROM audio_urls WHERE category = ?", (category,)
+    ).fetchone()
+
+    print(f"\n{'=' * 60}")
+    print(f"  分类: {category}")
+    print(f"{'=' * 60}")
+    print(f"  记录数:   {stats['cnt']}")
+    print(f"  总时长:   {fmt_duration(stats['total_sec'])}")
+    print(f"  总大小:   {fmt_size(stats['total_size'])}")
+    print(f"  已完成:   {stats['done_cnt']}  待下载: {stats['pending_cnt']}  失败: {stats['failed_cnt']}")
+
+    sources = conn.execute(
+        "SELECT source, COUNT(*) AS cnt FROM audio_urls "
+        "WHERE category = ? GROUP BY source ORDER BY cnt DESC", (category,)
+    ).fetchall()
+    if sources:
+        print("  来源分布:")
+        for s in sources:
+            print(f"    {s['source']:<16s}  {s['cnt']}")
+
+    speakers = conn.execute(
+        "SELECT speaker, COUNT(*) AS cnt FROM audio_urls "
+        "WHERE category = ? AND speaker != '' GROUP BY speaker ORDER BY cnt DESC LIMIT 10",
+        (category,)
+    ).fetchall()
+    if speakers:
+        print("  说话人 (前 10):")
+        for s in speakers:
+            print(f"    {s['speaker']:<20s}  {s['cnt']}")
+
+    print()
+    n = input("  显示该分类的记录? 输入条数 (直接回车跳过, a=全部): ").strip().lower()
+    if n == "a":
+        show_all_records(conn, category_filter=category)
+    elif n.isdigit() and int(n) > 0:
+        show_all_records(conn, category_filter=category, limit=int(n))
+
+
 def interactive(conn: sqlite3.Connection):
     show_overview(conn)
     while True:
@@ -197,10 +290,11 @@ def interactive(conn: sqlite3.Connection):
         print("    1  查看记录详情 (可指定条数)")
         print("    2  按来源筛选记录")
         print("    3  按状态筛选记录")
-        print("    4  查看单条记录 (输入 ID)")
-        print("    5  查看爬取检查点")
-        print("    6  查看时长统计")
-        print("    7  重新显示概览")
+        print("    4  按分类筛选记录")
+        print("    5  查看单条记录 (输入 ID)")
+        print("    6  查看爬取检查点")
+        print("    7  查看时长统计")
+        print("    8  重新显示概览")
         print("    q  退出")
         print("─" * 50)
         choice = input("  请选择> ").strip().lower()
@@ -224,16 +318,18 @@ def interactive(conn: sqlite3.Connection):
             limit = int(n) if n.isdigit() else 0
             show_all_records(conn, status_filter=st, limit=limit)
         elif choice == "4":
+            show_category_menu(conn)
+        elif choice == "5":
             try:
                 rid = int(input("  输入记录 ID: ").strip())
                 show_single_record(conn, rid)
             except ValueError:
                 print("  无效 ID")
-        elif choice == "5":
-            show_checkpoints(conn)
         elif choice == "6":
-            show_duration_stats(conn)
+            show_checkpoints(conn)
         elif choice == "7":
+            show_duration_stats(conn)
+        elif choice == "8":
             show_overview(conn)
         elif choice == "q":
             print("  再见！")
@@ -268,6 +364,10 @@ def main():
             show_all_records(conn, status_filter=args[1], limit=limit)
         elif args[0] == "id" and len(args) > 1:
             show_single_record(conn, int(args[1]))
+        elif args[0] == "category" and len(args) > 1:
+            show_all_records(conn, category_filter=args[1], limit=limit)
+        elif args[0] == "categories":
+            show_category_menu(conn)
         elif args[0] == "checkpoints":
             show_checkpoints(conn)
         elif args[0] == "duration":
@@ -279,6 +379,8 @@ def main():
             print("  python db_viewer.py all [-n NUM]       所有记录详情")
             print("  python db_viewer.py source NAME [-n N] 按来源筛选")
             print("  python db_viewer.py status NAME [-n N] 按状态筛选")
+            print("  python db_viewer.py category NAME [-n N] 按分类筛选")
+            print("  python db_viewer.py categories         查看分类概览")
             print("  python db_viewer.py id NUM             查看指定 ID")
             print("  python db_viewer.py checkpoints        查看爬取检查点")
             print("  python db_viewer.py duration           查看时长统计")

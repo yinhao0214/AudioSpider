@@ -7,6 +7,9 @@
     python main.py                           # 下载 50 条
     python main.py --limit 200               # 下载 200 条
     python main.py --source xiaoyuzhou       # 仅下载指定来源
+    python main.py --category 播客           # 仅下载指定分类
+    python main.py --per-source --limit 20   # 每个来源各下载 20 条
+    python main.py --per-category --limit 10 # 每个分类各下载 10 条
     python main.py --workers 10              # 10 并发下载
     python main.py --loop                    # 持续消费下载
     python main.py stats                     # 查看统计 + 已下载文件
@@ -40,7 +43,10 @@ def main():
     parser.add_argument("action", nargs="?", default="download",
                         choices=["download", "stats", "fix-meta"],
                         help="download=下载(默认), stats=统计, fix-meta=补生成元信息JSON")
-    parser.add_argument("--source", default=None, help="仅下载指定来源")
+    parser.add_argument("--source", default=None, help="仅下载指定来源 (如 podcast_rss, bilibili)")
+    parser.add_argument("--category", default=None, help="仅下载指定分类 (如 播客, 有声书)")
+    parser.add_argument("--per-source", action="store_true", help="每个来源各下载 --limit 条")
+    parser.add_argument("--per-category", action="store_true", help="每个分类各下载 --limit 条")
     parser.add_argument("--limit", type=int, default=50, help="单批下载数量(默认50)")
     parser.add_argument("--workers", type=int, default=None, help="并发下载数(默认5)")
     parser.add_argument("--loop", action="store_true", help="持续循环消费下载")
@@ -59,9 +65,17 @@ def main():
         fix_meta(storage)
         return
 
+    dl_kwargs = dict(
+        limit=args.limit,
+        source=args.source,
+        category=args.category,
+        per_source=args.per_source,
+        per_category=args.per_category,
+    )
+
     async def download_once():
         dl = Downloader(storage, max_workers=args.workers)
-        return await dl.download_all(limit=args.limit, source=args.source)
+        return await dl.download_all(**dl_kwargs)
 
     async def download_loop():
         logger = logging.getLogger("download")
@@ -70,7 +84,7 @@ def main():
             round_num += 1
             logger.info(f"\n=== 下载轮次 {round_num} ===")
             dl = Downloader(storage, max_workers=args.workers)
-            stats = await dl.download_all(limit=args.limit, source=args.source)
+            stats = await dl.download_all(**dl_kwargs)
             storage.show_stats()
             if stats["success"] == 0 and stats["failed"] == 0:
                 logger.info(f"本轮无新下载, 等待 {args.interval} 秒...")

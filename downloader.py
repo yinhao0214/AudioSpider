@@ -151,8 +151,18 @@ class Downloader:
         self.stats = {"success": 0, "failed": 0, "skipped": 0, "dup": 0}
         self._connector = None
 
-    async def download_all(self, limit: int = 50, source: str | None = None):
-        pending = self.storage.get_pending(limit=limit, source=source)
+    async def download_all(
+        self,
+        limit: int = 50,
+        source: str | None = None,
+        category: str | None = None,
+        per_source: bool = False,
+        per_category: bool = False,
+    ):
+        pending = self.storage.get_pending(
+            limit=limit, source=source, category=category,
+            per_source=per_source, per_category=per_category,
+        )
         if not pending:
             logger.info("没有待下载的音频")
             return self.stats

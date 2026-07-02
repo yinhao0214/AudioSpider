@@ -162,6 +162,20 @@ python main.py --limit 200
 
 # 指定来源
 python main.py --source xiaoyuzhou
+python main.py --source podcast_rss --limit 100
+
+# 指定分类
+python main.py --category 播客 --limit 100
+python main.py --category 有声书 --limit 50
+
+# 每个来源各下载 N 条
+python main.py --per-source --limit 20
+
+# 每个分类各下载 N 条
+python main.py --per-category --limit 10
+
+# 组合过滤（来源 + 分类）
+python main.py --source bilibili --category 有声书 --limit 50
 
 # 10 并发下载
 python main.py --workers 10
