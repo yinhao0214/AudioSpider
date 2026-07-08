@@ -42,6 +42,7 @@ class Storage:
         if not hasattr(self._local, "conn") or self._local.conn is None:
             self._local.conn = sqlite3.connect(self.db_path)
             self._local.conn.row_factory = sqlite3.Row
+            self._local.conn.execute("PRAGMA temp_store = MEMORY")
         return self._local.conn
 
     def _init_db(self):
@@ -79,6 +80,8 @@ class Storage:
                 PRIMARY KEY (source, checkpoint_key)
             );
         """)
+        # 启动时把中断的 downloading 状态恢复为 pending，确保重启后能重新下载
+        conn.execute("UPDATE audio_urls SET status='pending' WHERE status='downloading'")
         conn.commit()
 
     # ── 增量爬取标记 ──

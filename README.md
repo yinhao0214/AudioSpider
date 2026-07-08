@@ -9,14 +9,13 @@
 
 ```
 AudioSpider/
-├── discover.py         # 自动发现新源（搜索 Apple Podcasts，扩充 URL 池）
+├── discover.py         # 自动发现新源（Apple Podcasts + Podcast Index，两源全覆盖）
 ├── collect.py          # URL 搜集器（从已有固定源抓取最新音频链接）
 ├── main.py             # 音频下载器（从数据库取 URL 并下载）
-├── config.py           # 全局配置（目录、超时、爬虫参数）
+├── config.py           # 全局配置（目录、超时、爬虫参数、Podcast Index API Key）
 ├── storage.py          # SQLite 存储（URL 去重、状态追踪、指纹去重）
 ├── downloader.py       # 异步下载引擎（并发、断点续传、元信息生成）
 ├── anti_crawler.py     # 反爬工具（UA 轮换、延时、代理、限速）
-├── discover_podcastindex.py # Podcast Index API 发现源（需 API Key）
 ├── convert_audio.py    # 批量音频格式转换（→ Opus 24kHz mono 32kbps）
 ├── db_viewer.py        # 数据库交互式查看器
 ├── spiders/            # 各来源爬虫
@@ -41,7 +40,7 @@ AudioSpider/
 
 **三个独立程序，按需运行：**
 
-1. **`discover.py`** — 自动发现新源。通过 Apple Podcasts 搜索 API，用关键词搜索全网播客，拿到 RSS 地址并解析出音频 URL 入库。相当于"开拓新领地"。
+1. **`discover.py`** — 自动发现新源。通过两个数据源（Apple Podcasts、Podcast Index）全网发现播客，拿到 RSS 地址并解析全部剧集的音频 URL 入库。仅采集中英文播客。相当于"开拓新领地"。
 2. **`collect.py`** — 从已有固定源抓取。只跑 `config.py` 里配置好的来源（小宇宙、喜马拉雅等），抓取最新音频。相当于"巡逻老地盘"。
 3. **`main.py`** — 消费下载。从数据库取待下载 URL，批量下载到本地。
 
@@ -53,6 +52,26 @@ collect.py  → [抓已有来源]  ──┘
 
 ## 快速开始
 
+### 安装系统依赖
+
+下载器会自动将音频转为 Opus 格式，需要系统安装 ffmpeg：
+
+```bash
+# Ubuntu / Debian
+sudo apt update && sudo apt install -y ffmpeg
+
+# CentOS / RHEL
+sudo yum install -y epel-release && sudo yum install -y ffmpeg
+
+# Arch Linux
+sudo pacman -S ffmpeg
+
+# 验证安装
+ffmpeg -version
+```
+
+### 安装项目
+
 ```bash
 # 1. 克隆项目
 git clone https://github.com/your-username/AudioSpider.git
@@ -60,13 +79,14 @@ cd AudioSpider
 
 # 2. 创建虚拟环境
 python3 -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
+source venv/bin/activate
 
-# 3. 安装依赖
+# 3. 安装 Python 依赖
 pip install -r requirements.txt
 
 # 4. 自动发现播客源（首次运行，大量扩充 URL 池）
-python discover.py
+python discover.py                         # 两个源全开（需配置 Podcast Index API Key，否则自动跳过）
+python discover.py --source apple          # 或只用 Apple 源（无需注册）
 
 # 5. 下载音频
 python main.py --limit 100
@@ -76,24 +96,67 @@ python main.py --limit 100
 
 ### 自动发现新源（discover.py）
 
-通过 Apple Podcasts Search API 按关键词搜索播客，自动提取 RSS 地址并解析音频 URL 入库。无需手动查找 RSS 地址。
+通过两个数据源全网发现播客 RSS，自动解析音频 URL 入库。仅采集中英文播客。
+
+**两个数据源：**
+
+| 源 | 说明 | 覆盖量 |
+|---|---|---|
+| **Apple Podcasts**（`--source apple`） | 关键词搜索（80+ 中英文关键词）+ 分类遍历（88 个分类），中国区+美国区 | 去重后预计数万个播客 |
+| **Podcast Index**（`--source podcastindex`） | 开源播客目录，400 万+ 播客。关键词搜索 + 热门 + 分页遍历最近更新 | 理论上无上限 |
 
 ```bash
-# 用默认关键词搜索（相声、播客、有声书、演讲等 20+ 个关键词）
+# 两个源全部启用（默认，最大覆盖）
 python discover.py
+
+# 只用 Apple（无需注册，立刻能跑）
+python discover.py --source apple
+
+# 只用 Apple 关键词搜索
+python discover.py --source apple_keyword
+
+# 只用 Apple 分类遍历
+python discover.py --source apple_genre
+
+# 只用 Podcast Index（需配置 API Key）
+python discover.py --source podcastindex
+
+# 组合使用（如：Apple 分类遍历 + Podcast Index）
+python discover.py --source apple_genre podcastindex
 
 # 自定义关键词
 python discover.py --keywords 脱口秀 TED 历史故事
 
-# 每个关键词取前 100 个播客（默认 50）
-python discover.py --top 100
+# Apple 关键词搜索每词取前 200 个播客（默认 200，上限 200）
+python discover.py --top 200
+
+# Podcast Index 翻页更深（100 页 × 1000 条 = 最多 10 万条 feeds）
+python discover.py --pi-max-pages 100
 
 # 每天自动搜索一次
 python discover.py --loop --interval 86400
 
 # 查看已发现的所有播客源
 python discover.py --list-feeds
+
+# 查看统计（总数、已解析/未解析、按来源分布）
+python discover.py --stats
 ```
+
+**使用 Podcast Index 前的准备：**
+
+Podcast Index 是免费开源的播客目录。使用前需注册获取 API Key：
+
+1. 访问 https://api.podcastindex.org/ 免费注册
+2. 获取 API Key 和 Secret
+3. 设置环境变量：
+
+```bash
+export PODCAST_INDEX_KEY="你的key"
+export PODCAST_INDEX_SECRET="你的secret"
+```
+
+或在 `config.py` 中直接配置。未配置时程序会自动跳过该源，不影响 Apple 源的正常运行。
 
 ### 从固定源搜集 URL（collect.py）
 
@@ -147,8 +210,9 @@ python collect.py --loop --interval 3600
 | | `discover.py` | `collect.py` |
 |---|---|---|
 | **做什么** | 搜索全网，发现新的播客源 | 从已有固定源抓取音频链接 |
-| **数据来源** | Apple Podcasts 搜索 API | `config.py` 中配置的 5 个固定爬虫 |
-| **URL 数量** | 无上限，换关键词就有新结果 | 单次约 1500 条 |
+| **数据来源** | Apple Podcasts（关键词+分类） + Podcast Index API | `config.py` 中配置的 5 个固定爬虫 |
+| **URL 数量** | 无上限，两源组合覆盖数十万播客 | 单次约 1500 条 |
+| **语言** | 仅中英文 | 取决于配置 |
 | **适合场景** | 大量扩充 URL 池 | 定期检查已有播客的更新 |
 | **类比** | "去新书店找书" | "去常去的书店看有没有上新" |
 
@@ -178,11 +242,16 @@ python main.py --per-category --limit 10
 # 组合过滤（来源 + 分类）
 python main.py --source bilibili --category 有声书 --limit 50
 
-# 10 并发下载
-python main.py --workers 10
+# 20 并发下载（默认 20）
+python main.py --workers 20
 
-# 持续消费下载（每 60 秒检查一次）
+# 持续消费下载（每 60 秒检查一次，每轮下载 --limit 条）
 python main.py --loop
+
+# 全量下载数据库中所有待下载 URL
+python main.py --limit 999999999
+
+# 中断后重启会自动恢复：downloading 状态自动重置为 pending，不会丢失进度
 
 # 查看统计
 python main.py stats
@@ -297,9 +366,9 @@ python collect.py && python main.py --limit 100
 # 偶尔：用新关键词扩充源
 python discover.py --keywords 英语学习 科技播客
 
-# 后台持续运行
-python collect.py --loop &          # 终端1: 定期抓已有源
-python main.py --loop --workers 8 & # 终端2: 持续下载
+# 后台持续运行（discover + main 同时跑，discover 写入新 URL，main 实时下载）
+python discover.py --source apple & # 终端1: 发现新源
+python main.py --loop &             # 终端2: 持续下载（默认 20 并发）
 ```
 
 ## 数据来源
@@ -398,12 +467,12 @@ downloads/
 
 ### 待接入的发现源
 
-当前 `discover.py` 仅通过 Apple Podcasts Search API 发现播客源，计划接入更多渠道：
+当前 `discover.py` 已集成两个数据源（Apple Podcasts、Podcast Index API），计划接入更多渠道：
 
-- [x] **Podcast Index API** (`discover_podcastindex.py`) — 最大的开放播客目录（400 万+ 播客），免费注册 API Key 即可使用，支持搜索/分类浏览/趋势榜单
+- [x] **Podcast Index API** — 最大的开放播客目录（400 万+ 播客），已集成到 `discover.py`，支持关键词搜索/热门播客/分页遍历最近更新的 feeds
+- [x] **Apple Genre 分类遍历** — 遍历 Apple Podcasts 88 个分类 × 2 个地区，已集成到 `discover.py`
 - [ ] **gpodder.net API** — 开源播客目录，提供热门排行和订阅数排序，免费无需认证
 - [ ] **Listen Notes API** — 播客搜索引擎（300 万+ 播客），支持按语言/地区过滤，免费额度 300 次/月
-- [ ] **iTunes Genre 浏览** — 利用 Apple 的分类 ID 浏览各品类 Top 榜单（当前只用了搜索接口）
 - [ ] **荔枝FM** — 国内 UGC 音频平台，大量中文有声内容
 - [ ] **蜻蜓FM** — 国内音频平台，评书/有声书资源丰富
 

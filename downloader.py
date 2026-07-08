@@ -223,7 +223,7 @@ class Downloader:
                 if expected_size > 0 and existing_size >= expected_size:
                     self.storage.update_status(item["url"], "done", filepath)
                     self.stats["skipped"] += 1
-                    logger.info(f"{progress} - 跳过(已存在): {filename}")
+                    logger.info(f"{progress} - 跳过(已存在): {filepath}")
                     return
 
             self.storage.update_status(item["url"], "downloading")
@@ -252,7 +252,7 @@ class Downloader:
                     self.stats["success"] += 1
                     size_mb = os.path.getsize(filepath) / 1024 / 1024
                     _save_meta(filepath, item, content_hash)
-                    logger.info(f"{progress} ✓ {filename} ({size_mb:.1f}MB)")
+                    logger.info(f"{progress} ✓ {filename} ({size_mb:.1f}MB) → {filepath}")
                     return
                 except Exception as e:
                     wait = RETRY_BACKOFF ** attempt
@@ -265,7 +265,7 @@ class Downloader:
 
             self.storage.update_status(item["url"], "failed")
             self.stats["failed"] += 1
-            logger.error(f"{progress} ✗ {filename}")
+            logger.error(f"{progress} ✗ {filename} | {url[:80]}")
 
     def _build_subdir(self, source: str, category: str) -> str:
         parts = [DOWNLOAD_DIR]

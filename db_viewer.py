@@ -6,7 +6,9 @@ import sqlite3
 import sys
 import os
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audiospider.db")
+import config  # noqa: F401 — 触发 TMPDIR 设置
+
+DB_PATH = config.DB_PATH
 
 
 def fmt_size(n: int) -> str:
@@ -33,6 +35,7 @@ def connect():
         sys.exit(1)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA temp_store = MEMORY")
     return conn
 
 

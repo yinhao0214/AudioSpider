@@ -1,34 +1,36 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-dist/
-build/
-*.egg
-
-# Virtual environment
-venv/
-.venv/
-env/
-
-# Downloaded data (large binary files, not tracked)
+# 下载的音频文件
 downloads/
 
-# Database (local state, regenerated on each machine)
+# 数据库
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 
-# Logs
+# 日志
 logs/
 
-# IDE / Editor
+# 临时文件
+tmp/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
+
+# 文档/个人文件
+docs/
 
 # OS
 .DS_Store
+._*
 Thumbs.db

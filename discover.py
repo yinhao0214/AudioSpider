@@ -1,32 +1,38 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Hao Yin. All rights reserved.
 
-"""自动发现新的语音源 — 搜索播客目录，自动扩充 URL 池
+"""自动发现新的语音源 — 搜索播客目录，自动扩充 URL 池（仅采集中英文）
 
-核心策略：
-1. Apple Podcasts Search API（免费，无需认证）按关键词搜索中英文播客
-2. 提取每个播客的 RSS 地址
-3. 解析 RSS 获取音频 URL，写入数据库
+两个数据源：
+1. Apple Podcasts — 关键词搜索 + 88个分类遍历（免费，无需注册）
+2. Podcast Index — 400万+播客，关键词搜索 + 热门 + 分页遍历（免费，需注册 API Key）
 
 用法：
-    python discover.py                        # 用默认关键词搜索
-    python discover.py --keywords 脱口秀 TED   # 自定义关键词
-    python discover.py --top 100              # 每个关键词取前100个播客
-    python discover.py --loop --interval 86400 # 每天自动搜索一次
+    python discover.py                           # 两个源全部启用（默认）
+    python discover.py --source apple             # 只用 Apple
+    python discover.py --source podcastindex       # 只用 Podcast Index
+    python discover.py --keywords 脱口秀 TED       # 自定义关键词
+    python discover.py --top 200                  # Apple关键词搜索每词取前200
+    python discover.py --pi-max-pages 50          # Podcast Index 最近feeds翻页数
+    python discover.py --loop --interval 86400    # 每天自动搜索一次
+    python discover.py --stats                    # 查看统计
 """
 
 import argparse
 import asyncio
+import hashlib
 import logging
 import sqlite3
 import sys
+import time
 from datetime import datetime
 
+import re
+
 import aiohttp
-from bs4 import BeautifulSoup
 
 from anti_crawler import build_headers, random_delay
-from config import LOG_DIR, DB_PATH
+from config import LOG_DIR, DB_PATH, PODCAST_INDEX_KEY, PODCAST_INDEX_SECRET
 from storage import Storage, AudioRecord
 
 logger = logging.getLogger("discover")
@@ -82,6 +88,120 @@ DEFAULT_KEYWORDS = [
 
 APPLE_SEARCH_URL = "https://itunes.apple.com/search"
 
+# Apple Podcasts 全部分类 Genre ID（用于分类遍历）
+# 1302 = Podcasts 根分类；下面列出所有子分类
+APPLE_PODCAST_GENRES = {
+    # 主分类
+    1301: "Arts",
+    1303: "Comedy",
+    1304: "Education",
+    1305: "Kids & Family",
+    1307: "Health & Fitness",
+    1309: "TV & Film",
+    1310: "Music",
+    1311: "News",
+    1314: "Religion & Spirituality",
+    1315: "Science",
+    1316: "Sports",
+    1318: "Technology",
+    1321: "Business",
+    1323: "Games & Hobbies",      # 一些地区可用
+    1324: "Society & Culture",
+    1325: "Government",
+    1401: "Fiction",
+    1402: "True Crime",
+    1404: "History",
+    1405: "Leisure",
+    # 子分类（部分重要的）
+    1406: "Animation & Manga",
+    1459: "Documentary",
+    1461: "Entertainment News",
+    1462: "Sports News",
+    1463: "Tech News",
+    1464: "Business News",
+    1465: "Daily News",
+    1466: "News Commentary",
+    1467: "Politics",
+    1468: "Investing",
+    1469: "Management",
+    1470: "Marketing",
+    1471: "Non-Profit",
+    1472: "Parenting",
+    1473: "Pets & Animals",
+    1474: "Places & Travel",
+    1475: "Relationships",
+    1477: "Philosophy",
+    1478: "Spirituality",
+    1480: "Baseball",
+    1481: "Basketball",
+    1482: "Cricket",
+    1483: "Fantasy Sports",
+    1484: "Football",
+    1485: "Golf",
+    1486: "Hockey",
+    1487: "Rugby",
+    1488: "Soccer",
+    1489: "Swimming",
+    1490: "Tennis",
+    1491: "Wilderness",
+    1492: "Wrestling",
+    1493: "Astronomy",
+    1494: "Chemistry",
+    1495: "Earth Sciences",
+    1496: "Life Sciences",
+    1497: "Mathematics",
+    1498: "Natural Sciences",
+    1499: "Nature",
+    1500: "Physics",
+    1501: "Social Sciences",
+    1502: "Comedy Fiction",
+    1503: "Drama",
+    1504: "Science Fiction",
+    1543: "Self-Improvement",
+    1544: "Mental Health",
+    1545: "Nutrition",
+    1546: "Fitness",
+    1547: "Medicine",
+    1548: "Alternative Health",
+    1549: "Sexuality",
+    1550: "Education for Kids",
+    1551: "Stories for Kids",
+    1553: "Design",
+    1554: "Fashion & Beauty",
+    1555: "Food",
+    1556: "Performing Arts",
+    1557: "Visual Arts",
+    1558: "Books",
+    1559: "Music Commentary",
+    1560: "Music History",
+    1561: "Music Interviews",
+    1602: "Careers",
+    1603: "Entrepreneurship",
+    1604: "Improv",
+    1605: "Stand-Up",
+    1606: "Courses",
+    1607: "How To",
+    1608: "Language Learning",
+    1609: "Self-Improvement (Education)",
+    1610: "Comedy Interviews",
+    1611: "After Shows",
+    1612: "Film History",
+    1613: "Film Interviews",
+    1614: "Film Reviews",
+    1615: "TV Reviews",
+    1616: "Automotive",
+    1617: "Aviation",
+    1618: "Crafts",
+    1619: "Games",
+    1620: "Home & Garden",
+    1621: "Video Games",
+}
+
+APPLE_SEARCH_COUNTRIES = ["cn", "us"]
+
+# Podcast Index API
+PODCAST_INDEX_BASE = "https://api.podcastindex.org/api/1.0"
+
 GENRE_MAP = {
     # 英文 genre（美国区返回）
     "Comedy": "脱口秀",
@@ -134,6 +254,7 @@ class FeedStore:
     def __init__(self, db_path: str = DB_PATH):
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA temp_store = MEMORY")
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS discovered_feeds (
                 feed_url TEXT PRIMARY KEY,
@@ -236,59 +357,317 @@ def _map_genre(genres: list[str]) -> str:
     return "播客"
 
 
+async def search_apple_by_genre(session: aiohttp.ClientSession,
+                                genre_id: int, genre_name: str,
+                                country: str = "cn") -> list[dict]:
+    """通过 Apple 按分类搜索，使用 genreId 参数获取该分类下的播客"""
+    params = {
+        "term": "podcast",
+        "media": "podcast",
+        "limit": 200,
+        "country": country,
+        "genreId": genre_id,
+    }
+    try:
+        async with session.get(APPLE_SEARCH_URL, params=params,
+                               timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            if resp.status != 200:
+                logger.debug(f"Apple分类搜索 genre={genre_id} country={country} 返回 {resp.status}")
+                return []
+            data = await resp.json(content_type=None)
+            results = data.get("results", [])
+            podcasts = []
+            for r in results:
+                feed_url = r.get("feedUrl", "")
+                if not feed_url:
+                    continue
+                genres = r.get("genres", [])
+                podcasts.append({
+                    "feed_url": feed_url,
+                    "name": r.get("collectionName", ""),
+                    "artist": r.get("artistName", ""),
+                    "genre": ", ".join(genres),
+                    "genres": genres,
+                    "language": "zh" if country == "cn" else "en",
+                })
+            logger.info(f"Apple分类 [{genre_name}] (country={country}): 找到 {len(podcasts)} 个播客")
+            return podcasts
+    except Exception as e:
+        logger.error(f"Apple分类搜索失败 genre={genre_id}: {e}")
+        return []
+
+
+# ── Podcast Index API ──────────────────────────────────────────────────────
+
+def _pi_auth_headers() -> dict:
+    """生成 Podcast Index API 的认证 headers"""
+    ts = str(int(time.time()))
+    auth_hash = hashlib.sha1(
+        (PODCAST_INDEX_KEY + PODCAST_INDEX_SECRET + ts).encode()
+    ).hexdigest()
+    return {
+        "User-Agent": "AudioSpider/1.0",
+        "X-Auth-Key": PODCAST_INDEX_KEY,
+        "X-Auth-Date": ts,
+        "Authorization": auth_hash,
+    }
+
+
+async def pi_search(session: aiohttp.ClientSession,
+                     keyword: str, max_results: int = 200) -> list[dict]:
+    """Podcast Index: 按关键词搜索播客"""
+    url = f"{PODCAST_INDEX_BASE}/search/byterm"
+    params = {"q": keyword, "max": min(max_results, 1000)}
+    try:
+        async with session.get(url, params=params, headers=_pi_auth_headers(),
+                               timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            if resp.status != 200:
+                logger.warning(f"PodcastIndex搜索 '{keyword}' 返回 {resp.status}")
+                return []
+            data = await resp.json(content_type=None)
+            feeds = data.get("feeds", [])
+            podcasts = []
+            for f in feeds:
+                feed_url = f.get("url", "") or f.get("originalUrl", "")
+                if not feed_url:
+                    continue
+                lang_raw = (f.get("language") or "").lower()
+                language = "zh" if lang_raw.startswith("zh") else lang_raw[:2] if lang_raw else ""
+                if language and language not in ("zh", "en"):
+                    continue
+                categories = f.get("categories", {}) or {}
+                genre_str = ", ".join(categories.values()) if isinstance(categories, dict) else ""
+                podcasts.append({
+                    "feed_url": feed_url,
+                    "name": f.get("title", ""),
+                    "artist": f.get("author", ""),
+                    "genre": genre_str,
+                    "genres": list(categories.values()) if isinstance(categories, dict) else [],
+                    "language": language,
+                })
+            logger.info(f"PodcastIndex搜索 '{keyword}': 找到 {len(podcasts)} 个播客")
+            return podcasts
+    except Exception as e:
+        logger.error(f"PodcastIndex搜索失败 '{keyword}': {e}")
+        return []
+
+
+async def pi_recent_feeds(session: aiohttp.ClientSession,
+                          max_pages: int = 20,
+                          per_page: int = 1000) -> list[dict]:
+    """Podcast Index: 遍历最近更新的 feeds（支持分页，每页最多 1000 条）"""
+    url = f"{PODCAST_INDEX_BASE}/recent/feeds"
+    all_podcasts = []
+    since = None
+
+    for page in range(max_pages):
+        params = {"max": per_page, "lang": "zh,en"}
+        if since:
+            params["since"] = since
+        try:
+            await random_delay(0.3, 0.8)
+            async with session.get(url, params=params, headers=_pi_auth_headers(),
+                                   timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status != 200:
+                    logger.warning(f"PodcastIndex recent feeds 第{page+1}页 返回 {resp.status}")
+                    break
+                data = await resp.json(content_type=None)
+                feeds = data.get("feeds", [])
+                if not feeds:
+                    logger.info(f"PodcastIndex recent feeds: 第{page+1}页无数据，结束翻页")
+                    break
+
+                page_podcasts = []
+                for f in feeds:
+                    feed_url = f.get("url", "") or f.get("originalUrl", "")
+                    if not feed_url:
+                        continue
+                    lang_raw = (f.get("language") or "").lower()
+                    language = "zh" if lang_raw.startswith("zh") else lang_raw[:2] if lang_raw else ""
+                    if language and language not in ("zh", "en"):
+                        continue
+                    categories = f.get("categories", {}) or {}
+                    genre_str = ", ".join(categories.values()) if isinstance(categories, dict) else ""
+                    page_podcasts.append({
+                        "feed_url": feed_url,
+                        "name": f.get("title", ""),
+                        "artist": f.get("author", ""),
+                        "genre": genre_str,
+                        "genres": list(categories.values()) if isinstance(categories, dict) else [],
+                        "language": language,
+                    })
+
+                all_podcasts.extend(page_podcasts)
+                oldest_ts = feeds[-1].get("newestItemPublishTime", 0)
+                if oldest_ts:
+                    since = oldest_ts - 1
+                else:
+                    break
+
+                logger.info(f"PodcastIndex recent feeds 第{page+1}页: +{len(page_podcasts)} 个, 累计 {len(all_podcasts)}")
+
+                if len(feeds) < per_page:
+                    break
+        except Exception as e:
+            logger.error(f"PodcastIndex recent feeds 第{page+1}页失败: {e}")
+            break
+
+    logger.info(f"PodcastIndex recent feeds 总计: {len(all_podcasts)} 个播客")
+    return all_podcasts
+
+
+async def pi_trending(session: aiohttp.ClientSession,
+                      max_results: int = 100) -> list[dict]:
+    """Podcast Index: 获取热门播客"""
+    url = f"{PODCAST_INDEX_BASE}/podcasts/trending"
+    params = {"max": min(max_results, 1000), "lang": "zh,en"}
+    try:
+        async with session.get(url, params=params, headers=_pi_auth_headers(),
+                               timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            if resp.status != 200:
+                logger.warning(f"PodcastIndex trending 返回 {resp.status}")
+                return []
+            data = await resp.json(content_type=None)
+            feeds = data.get("feeds", [])
+            podcasts = []
+            for f in feeds:
+                feed_url = f.get("url", "") or f.get("originalUrl", "")
+                if not feed_url:
+                    continue
+                lang_raw = (f.get("language") or "").lower()
+                language = "zh" if lang_raw.startswith("zh") else lang_raw[:2] if lang_raw else ""
+                if language and language not in ("zh", "en"):
+                    continue
+                categories = f.get("categories", {}) or {}
+                genre_str = ", ".join(categories.values()) if isinstance(categories, dict) else ""
+                podcasts.append({
+                    "feed_url": feed_url,
+                    "name": f.get("title", ""),
+                    "artist": f.get("author", ""),
+                    "genre": genre_str,
+                    "genres": list(categories.values()) if isinstance(categories, dict) else [],
+                    "language": language,
+                })
+            logger.info(f"PodcastIndex trending: 找到 {len(podcasts)} 个播客")
+            return podcasts
+    except Exception as e:
+        logger.error(f"PodcastIndex trending 失败: {e}")
+        return []
+
+
+async def pi_categories(session: aiohttp.ClientSession) -> list[dict]:
+    """Podcast Index: 获取所有分类列表"""
+    url = f"{PODCAST_INDEX_BASE}/categories/list"
+    try:
+        async with session.get(url, headers=_pi_auth_headers(),
+                               timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            if resp.status != 200:
+                return []
+            data = await resp.json(content_type=None)
+            return data.get("feeds", [])
+    except Exception as e:
+        logger.error(f"PodcastIndex categories 失败: {e}")
+        return []
+
+
+MAX_RSS_SIZE = 20 * 1024 * 1024  # 20MB，超过此大小的 RSS 跳过
+
+# 纯正则提取 RSS 内容，不依赖任何 XML 解析器，彻底避免 segfault
+_RE_CHANNEL_TITLE = re.compile(r"<channel[^>]*>.*?<title[^>]*>(.*?)</title>", re.S)
+_RE_LANGUAGE = re.compile(r"<language[^>]*>(.*?)</language>", re.S | re.I)
+_RE_ITEM = re.compile(r"<item[\s>].*?</item>", re.S)
+_RE_ENCLOSURE = re.compile(r'<enclosure\s[^>]*?url=["\']([^"\']+)["\'][^>]*/?\s*>', re.S)
+_RE_ENCLOSURE_TYPE = re.compile(r'<enclosure\s[^>]*?type=["\']([^"\']+)["\']', re.S)
+_RE_ENCLOSURE_LENGTH = re.compile(r'<enclosure\s[^>]*?length=["\'](\d+)["\']', re.S)
+_RE_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.S)
+_RE_GUID = re.compile(r"<guid[^>]*>(.*?)</guid>", re.S)
+_RE_DURATION = re.compile(r"<(?:itunes:)?duration[^>]*>(.*?)</(?:itunes:)?duration>", re.S)
+_RE_CDATA = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.S)
+
+
+def _strip_cdata(text: str) -> str:
+    m = _RE_CDATA.search(text)
+    return m.group(1).strip() if m else text.strip()
+
+
 async def parse_rss_feed(session: aiohttp.ClientSession,
-                          feed_url: str, max_eps: int = 50,
+                          feed_url: str, max_eps: int = 0,
                           genres: list[str] | None = None) -> list[AudioRecord]:
-    """解析单个 RSS feed，返回音频记录"""
+    """解析单个 RSS feed，返回音频记录。使用正则提取，不依赖 XML 解析器。"""
     records = []
     try:
         async with session.get(feed_url, headers=build_headers(),
-                               timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                               timeout=aiohttp.ClientTimeout(total=30)) as resp:
             if resp.status != 200:
                 return []
-            text = await resp.text()
-            soup = BeautifulSoup(text, "lxml-xml")
+            content_length = resp.content_length or 0
+            if content_length > MAX_RSS_SIZE:
+                logger.debug(f"RSS 过大({content_length // 1024 // 1024}MB), 跳过: {feed_url}")
+                return []
+            # 限量读取，避免超大响应导致崩溃
+            chunks = []
+            total_read = 0
+            async for chunk in resp.content.iter_chunked(65536):
+                total_read += len(chunk)
+                if total_read > MAX_RSS_SIZE:
+                    logger.debug(f"RSS 读取超限({total_read // 1024 // 1024}MB), 跳过: {feed_url}")
+                    return []
+                chunks.append(chunk)
+            raw = b"".join(chunks)
 
+            text = raw.decode("utf-8", errors="replace")
+
+            # 提取播客标题
             podcast_title = ""
-            channel = soup.find("channel")
-            if channel:
-                t = channel.find("title", recursive=False)
-                if t:
-                    podcast_title = t.get_text(strip=True)
+            m = _RE_CHANNEL_TITLE.search(text)
+            if m:
+                podcast_title = _strip_cdata(m.group(1))
 
+            # 提取语言
             language = ""
-            lang_tag = soup.find("language")
-            if lang_tag:
-                lang_raw = lang_tag.get_text(strip=True).lower()
+            m = _RE_LANGUAGE.search(text)
+            if m:
+                lang_raw = m.group(1).strip().lower()
                 language = "zh" if lang_raw.startswith("zh") else lang_raw[:2]
 
-            for item in list(soup.find_all("item"))[:max_eps]:
-                enclosure = item.find("enclosure")
-                if not enclosure:
+            # 提取所有 <item>
+            items = _RE_ITEM.findall(text)
+            if max_eps > 0:
+                items = items[:max_eps]
+
+            for item_text in items:
+                m_enc = _RE_ENCLOSURE.search(item_text)
+                if not m_enc:
                     continue
-                audio_url = enclosure.get("url", "")
-                mime = enclosure.get("type", "")
+                audio_url = m_enc.group(1).strip()
                 if not audio_url:
                     continue
+
+                # 检查 MIME 类型
+                m_type = _RE_ENCLOSURE_TYPE.search(item_text)
+                mime = m_type.group(1) if m_type else ""
                 if "audio" not in mime:
                     ext = audio_url.rsplit(".", 1)[-1].split("?")[0].lower()
                     if ext not in ("mp3", "m4a", "ogg", "aac", "wav", "opus"):
                         continue
 
-                title_tag = item.find("title")
-                title = title_tag.get_text(strip=True) if title_tag else ""
+                # HTML 实体还原（部分 RSS 会对 URL 中的 & 转义）
+                audio_url = audio_url.replace("&amp;", "&")
 
-                guid_tag = item.find("guid")
-                guid = guid_tag.get_text(strip=True) if guid_tag else audio_url
+                m_title = _RE_TITLE.search(item_text)
+                title = _strip_cdata(m_title.group(1)) if m_title else ""
 
-                duration_tag = item.find("itunes:duration") or item.find("duration")
-                duration = 0
-                if duration_tag:
-                    duration = _parse_duration(duration_tag.get_text(strip=True))
+                m_guid = _RE_GUID.search(item_text)
+                guid = _strip_cdata(m_guid.group(1)) if m_guid else audio_url
+
+                m_dur = _RE_DURATION.search(item_text)
+                duration = _parse_duration(m_dur.group(1).strip()) if m_dur else 0
+
+                m_len = _RE_ENCLOSURE_LENGTH.search(item_text)
+                size = int(m_len.group(1)) if m_len else 0
 
                 ext = audio_url.rsplit(".", 1)[-1].split("?")[0].lower()
                 fmt = ext if ext in ("m4a", "ogg", "aac", "wav", "opus") else "mp3"
-                size = int(enclosure.get("length", 0) or 0)
 
                 category = _map_genre(genres or []) if genres else "播客"
 
@@ -319,46 +698,121 @@ def _parse_duration(text: str) -> int:
     return 0
 
 
-async def discover_and_collect(keywords: list[str], top: int = 50):
-    """主流程：搜索 → 发现 feeds → 解析 → 入库"""
+def _store_podcasts(feed_store: FeedStore, podcasts: list[dict], via: str) -> int:
+    """将播客列表写入 feed_store，返回新增数量"""
+    new = 0
+    for p in podcasts:
+        if not feed_store.feed_exists(p["feed_url"]):
+            feed_store.add_feed(
+                feed_url=p["feed_url"],
+                name=p["name"], artist=p["artist"],
+                genre=p["genre"], language=p.get("language", ""),
+                via=via,
+            )
+            new += 1
+    return new
+
+
+async def discover_and_collect(keywords: list[str], top: int = 200,
+                                sources: list[str] | None = None,
+                                pi_max_pages: int = 20):
+    """主流程：搜索 → 发现 feeds → 解析 → 入库
+
+    Args:
+        sources: 启用的数据源，可选 "apple", "podcastindex"，默认全部启用
+        pi_max_pages: Podcast Index recent feeds 最大翻页数
+    """
+    active = set(sources or ["apple", "podcastindex"])
+    if "apple" in active:
+        active.update(["apple_keyword", "apple_genre"])
+
     feed_store = FeedStore()
     storage = Storage()
 
-    logger.info(f"开始自动发现, 关键词: {len(keywords)} 个, 每词最多 {top} 个播客")
-
+    logger.info(f"开始自动发现, 启用源: {active}")
     new_feeds = 0
+
     async with aiohttp.ClientSession() as session:
-        # 搜索 Apple Podcasts
-        for keyword in keywords:
-            for country in ("cn", "us"):
-                await random_delay(0.5, 1.5)
-                podcasts = await search_apple_podcasts(session, keyword, limit=top, country=country)
-                for p in podcasts:
-                    if not feed_store.feed_exists(p["feed_url"]):
-                        feed_store.add_feed(
-                            feed_url=p["feed_url"],
-                            name=p["name"], artist=p["artist"],
-                            genre=p["genre"], language=p["language"],
-                            via=f"apple:{keyword}:{country}",
-                        )
-                        new_feeds += 1
 
-    logger.info(f"发现阶段完成: 新增 {new_feeds} 个 RSS feeds, 总计 {feed_store.count()} 个")
+        # ── Apple Podcasts 关键词搜索 ──
+        if "apple_keyword" in active:
+            logger.info(f"\n{'='*50}")
+            logger.info(f"[Apple] 关键词搜索: {len(keywords)} 个关键词, 每词最多 {top} 个")
+            logger.info(f"{'='*50}")
+            for i, keyword in enumerate(keywords, 1):
+                for country in APPLE_SEARCH_COUNTRIES:
+                    await random_delay(0.5, 1.5)
+                    podcasts = await search_apple_podcasts(session, keyword, limit=top, country=country)
+                    added = _store_podcasts(feed_store, podcasts, f"apple_kw:{keyword}:{country}")
+                    new_feeds += added
+                if i % 10 == 0:
+                    logger.info(f"  关键词进度: {i}/{len(keywords)}, 累计新增 {new_feeds} 个 feeds")
 
-    # 解析未爬取过的 feeds
+        # ── Apple Podcasts 分类遍历 ──
+        if "apple_genre" in active:
+            logger.info(f"\n{'='*50}")
+            logger.info(f"[Apple] 分类遍历: {len(APPLE_PODCAST_GENRES)} 个分类 × {len(APPLE_SEARCH_COUNTRIES)} 个地区")
+            logger.info(f"{'='*50}")
+            genre_count = 0
+            for genre_id, genre_name in APPLE_PODCAST_GENRES.items():
+                for country in APPLE_SEARCH_COUNTRIES:
+                    await random_delay(0.5, 1.5)
+                    podcasts = await search_apple_by_genre(session, genre_id, genre_name, country)
+                    added = _store_podcasts(feed_store, podcasts, f"apple_genre:{genre_id}:{country}")
+                    new_feeds += added
+                    genre_count += 1
+                if genre_count % 20 == 0:
+                    logger.info(f"  分类进度: {genre_count}/{len(APPLE_PODCAST_GENRES) * len(APPLE_SEARCH_COUNTRIES)}, "
+                                f"累计新增 {new_feeds} 个 feeds")
+
+        # ── Podcast Index（关键词搜索 + 热门 + 最近更新分页遍历）──
+        if "podcastindex" in active:
+            if not PODCAST_INDEX_KEY or not PODCAST_INDEX_SECRET:
+                logger.warning(
+                    "[PodcastIndex] 未配置 API Key，跳过。"
+                    "请设置环境变量 PODCAST_INDEX_KEY 和 PODCAST_INDEX_SECRET，"
+                    "或在 config.py 中配置。免费注册: https://api.podcastindex.org/"
+                )
+            else:
+                logger.info(f"\n{'='*50}")
+                logger.info(f"[PodcastIndex] 开始搜索")
+                logger.info(f"{'='*50}")
+
+                logger.info("[PodcastIndex] 关键词搜索...")
+                for keyword in keywords:
+                    await random_delay(0.3, 0.8)
+                    podcasts = await pi_search(session, keyword)
+                    added = _store_podcasts(feed_store, podcasts, f"pi_search:{keyword}")
+                    new_feeds += added
+
+                logger.info("[PodcastIndex] 获取热门播客...")
+                podcasts = await pi_trending(session, max_results=1000)
+                added = _store_podcasts(feed_store, podcasts, "pi_trending")
+                new_feeds += added
+
+                logger.info(f"[PodcastIndex] 遍历最近更新的 feeds (最多 {pi_max_pages} 页)...")
+                podcasts = await pi_recent_feeds(session, max_pages=pi_max_pages)
+                added = _store_podcasts(feed_store, podcasts, "pi_recent")
+                new_feeds += added
+
+    logger.info(f"\n发现阶段完成: 新增 {new_feeds} 个 RSS feeds, 总计 {feed_store.count()} 个")
+
+    # ── 解析未爬取过的 feeds ──
     uncrawled = feed_store.get_uncrawled()
     if not uncrawled:
         logger.info("没有新的 feed 需要解析")
         storage.show_stats()
         return
 
-    logger.info(f"开始解析 {len(uncrawled)} 个新 RSS feeds...")
+    logger.info(f"\n开始解析 {len(uncrawled)} 个新 RSS feeds...")
     total_new = 0
     async with aiohttp.ClientSession() as session:
         for i, feed in enumerate(uncrawled, 1):
             feed_url = feed["feed_url"]
             feed_name = feed["podcast_name"] or feed_url[:60]
             await random_delay(0.3, 0.8)
+
+            print(f"  >> 解析中 [{i}/{len(uncrawled)}] {feed_name} | {feed_url}", flush=True)
 
             feed_genres = [g.strip() for g in (feed.get("genre") or "").split(",") if g.strip()]
             records = await parse_rss_feed(session, feed_url, genres=feed_genres)
@@ -396,11 +850,18 @@ def main():
     parser = argparse.ArgumentParser(description="AudioSpider 自动发现新的语音源")
     parser.add_argument("--keywords", nargs="*", default=None,
                         help="自定义搜索关键词（默认使用内置关键词列表）")
-    parser.add_argument("--top", type=int, default=50,
-                        help="每个关键词最多发现多少个播客(默认50)")
+    parser.add_argument("--top", type=int, default=200,
+                        help="Apple关键词搜索每词最多发现多少个播客(默认200, 上限200)")
+    parser.add_argument("--source", nargs="*", default=None,
+                        choices=["apple", "apple_keyword", "apple_genre", "podcastindex", "all"],
+                        help="选择数据源: apple(关键词+分类), apple_keyword(仅关键词), "
+                             "apple_genre(仅分类), podcastindex, all(全部,默认)")
+    parser.add_argument("--pi-max-pages", type=int, default=20,
+                        help="Podcast Index recent feeds 最大翻页数(默认20, 每页1000条)")
     parser.add_argument("--loop", action="store_true", help="持续循环发现")
     parser.add_argument("--interval", type=int, default=86400, help="循环间隔秒数(默认1天)")
     parser.add_argument("--list-feeds", action="store_true", help="列出所有已发现的 feeds")
+    parser.add_argument("--stats", action="store_true", help="显示已发现 feeds 的统计信息")
 
     args = parser.parse_args()
     setup_logging()
@@ -414,6 +875,33 @@ def main():
             print(f"  {f['podcast_name'][:30]:<32} {status:<12} {f['feed_url'][:70]}")
         return
 
+    if args.stats:
+        feed_store = FeedStore()
+        feeds = feed_store.get_all()
+        total = len(feeds)
+        crawled = sum(1 for f in feeds if f["last_crawled"])
+        uncrawled = total - crawled
+        by_via = {}
+        for f in feeds:
+            source = (f.get("discovered_via") or "unknown").split(":")[0]
+            by_via[source] = by_via.get(source, 0) + 1
+        print(f"\n已发现 feeds 统计:")
+        print(f"  总计: {total}")
+        print(f"  已解析: {crawled}")
+        print(f"  未解析: {uncrawled}")
+        print(f"  按来源:")
+        for src, cnt in sorted(by_via.items(), key=lambda x: -x[1]):
+            print(f"    {src}: {cnt}")
+        return
+
+    # 解析 --source 参数
+    sources = None
+    if args.source:
+        if "all" in args.source:
+            sources = None
+        else:
+            sources = list(set(args.source))
+
     keywords = args.keywords or DEFAULT_KEYWORDS
 
     if args.loop:
@@ -424,12 +912,16 @@ def main():
                 logger.info(f"\n{'#' * 60}")
                 logger.info(f"# 第 {round_num} 轮自动发现 — {datetime.now():%Y-%m-%d %H:%M:%S}")
                 logger.info(f"{'#' * 60}")
-                await discover_and_collect(keywords, args.top)
+                await discover_and_collect(keywords, args.top,
+                                            sources=sources,
+                                            pi_max_pages=args.pi_max_pages)
                 logger.info(f"等待 {args.interval} 秒...")
                 await asyncio.sleep(args.interval)
         asyncio.run(loop())
     else:
-        asyncio.run(discover_and_collect(keywords, args.top))
+        asyncio.run(discover_and_collect(keywords, args.top,
+                                          sources=sources,
+                                          pi_max_pages=args.pi_max_pages))
 
 
 if __name__ == "__main__":

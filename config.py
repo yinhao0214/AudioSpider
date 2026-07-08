@@ -6,8 +6,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 DB_PATH = os.path.join(BASE_DIR, "audiospider.db")
+TMP_DIR = os.path.join(BASE_DIR, "tmp")
 
-MAX_CONCURRENT_DOWNLOADS = 5
+# SQLite 临时文件放在数据盘，避免系统根分区空间不足
+os.makedirs(TMP_DIR, exist_ok=True)
+os.environ.setdefault("TMPDIR", TMP_DIR)
+
+MAX_CONCURRENT_DOWNLOADS = 20
 MAX_CONCURRENT_SPIDERS = 3
 DOWNLOAD_TIMEOUT = 600
 REQUEST_TIMEOUT = 30
@@ -19,6 +24,10 @@ MAX_RETRIES = 3
 RETRY_BACKOFF = 2.0
 
 PROXY_LIST = []
+
+# Podcast Index API — 免费注册: https://api.podcastindex.org/
+PODCAST_INDEX_KEY = os.environ.get("PODCAST_INDEX_KEY", "")
+PODCAST_INDEX_SECRET = os.environ.get("PODCAST_INDEX_SECRET", "")
 
 CHUNK_SIZE = 8192
 
