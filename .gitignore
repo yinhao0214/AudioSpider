@@ -27,7 +27,7 @@ venv/
 *.swp
 *.swo
 
-# 文档/个人文件
+# 文档
 docs/
 
 # OS
