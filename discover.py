@@ -357,41 +357,62 @@ def _map_genre(genres: list[str]) -> str:
     return "播客"
 
 
+APPLE_TOP_CHARTS_URL = "https://itunes.apple.com/{country}/rss/toppodcasts/limit={limit}/genre={genre_id}/json"
+APPLE_LOOKUP_URL = "https://itunes.apple.com/lookup"
+
+
 async def search_apple_by_genre(session: aiohttp.ClientSession,
                                 genre_id: int, genre_name: str,
                                 country: str = "cn") -> list[dict]:
-    """通过 Apple 按分类搜索，使用 genreId 参数获取该分类下的播客"""
-    params = {
-        "term": "podcast",
-        "media": "podcast",
-        "limit": 200,
-        "country": country,
-        "genreId": genre_id,
-    }
+    """通过 Apple Top Charts API 获取分类下的热门播客排行榜，再用 Lookup API 批量获取 feed URL"""
+    top_url = APPLE_TOP_CHARTS_URL.format(country=country, limit=200, genre_id=genre_id)
     try:
-        async with session.get(APPLE_SEARCH_URL, params=params,
-                               timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        # 第一步：从 Top Charts 获取播客 ID 列表
+        async with session.get(top_url, timeout=aiohttp.ClientTimeout(total=15),
+                               allow_redirects=True) as resp:
             if resp.status != 200:
-                logger.debug(f"Apple分类搜索 genre={genre_id} country={country} 返回 {resp.status}")
+                logger.debug(f"Apple Top Charts genre={genre_id} country={country} 返回 {resp.status}")
                 return []
             data = await resp.json(content_type=None)
-            results = data.get("results", [])
-            podcasts = []
-            for r in results:
-                feed_url = r.get("feedUrl", "")
-                if not feed_url:
+            entries = data.get("feed", {}).get("entry", [])
+            if not entries:
+                return []
+            podcast_ids = []
+            for entry in entries:
+                pid = entry.get("id", {}).get("attributes", {}).get("im:id", "")
+                if pid:
+                    podcast_ids.append(pid)
+            if not podcast_ids:
+                return []
+
+        # 第二步：用 Lookup API 批量获取 feed URL（每批最多 200 个）
+        podcasts = []
+        for batch_start in range(0, len(podcast_ids), 200):
+            batch_ids = podcast_ids[batch_start:batch_start + 200]
+            ids_str = ",".join(batch_ids)
+            params = {"id": ids_str, "entity": "podcast", "country": country}
+            await random_delay(0.3, 0.6)
+            async with session.get(APPLE_LOOKUP_URL, params=params,
+                                   timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                if resp.status != 200:
                     continue
-                genres = r.get("genres", [])
-                podcasts.append({
-                    "feed_url": feed_url,
-                    "name": r.get("collectionName", ""),
-                    "artist": r.get("artistName", ""),
-                    "genre": ", ".join(genres),
-                    "genres": genres,
-                    "language": "zh" if country == "cn" else "en",
-                })
-            logger.info(f"Apple分类 [{genre_name}] (country={country}): 找到 {len(podcasts)} 个播客")
-            return podcasts
+                lookup_data = await resp.json(content_type=None)
+                for r in lookup_data.get("results", []):
+                    feed_url = r.get("feedUrl", "")
+                    if not feed_url:
+                        continue
+                    genres = r.get("genres", [])
+                    podcasts.append({
+                        "feed_url": feed_url,
+                        "name": r.get("collectionName", ""),
+                        "artist": r.get("artistName", ""),
+                        "genre": ", ".join(genres),
+                        "genres": genres,
+                        "language": "zh" if country == "cn" else "en",
+                    })
+
+        logger.info(f"Apple分类 [{genre_name}] (country={country}): 排行榜 {len(entries)} 个, 获取 feedUrl {len(podcasts)} 个")
+        return podcasts
     except Exception as e:
         logger.error(f"Apple分类搜索失败 genre={genre_id}: {e}")
         return []

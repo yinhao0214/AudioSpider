@@ -102,7 +102,7 @@ python main.py --limit 100
 
 | 源 | 说明 | 覆盖量 |
 |---|---|---|
-| **Apple Podcasts**（`--source apple`） | 关键词搜索（80+ 中英文关键词）+ 分类遍历（88 个分类），中国区+美国区 | 去重后预计数万个播客 |
+| **Apple Podcasts**（`--source apple`） | 关键词搜索（80+ 中英文关键词）+ 分类排行榜遍历（102 个分类 × 2 地区，Top Charts API），中国区+美国区 | 去重后预计数万个播客 |
 | **Podcast Index**（`--source podcastindex`） | 开源播客目录，400 万+ 播客。关键词搜索 + 热门 + 分页遍历最近更新 | 理论上无上限 |
 
 ```bash
@@ -115,7 +115,7 @@ python discover.py --source apple
 # 只用 Apple 关键词搜索
 python discover.py --source apple_keyword
 
-# 只用 Apple 分类遍历
+# 只用 Apple 分类排行榜遍历（Top Charts API，不依赖搜索词，覆盖面更广）
 python discover.py --source apple_genre
 
 # 只用 Podcast Index（需配置 API Key）
@@ -210,7 +210,7 @@ python collect.py --loop --interval 3600
 | | `discover.py` | `collect.py` |
 |---|---|---|
 | **做什么** | 搜索全网，发现新的播客源 | 从已有固定源抓取音频链接 |
-| **数据来源** | Apple Podcasts（关键词+分类） + Podcast Index API | `config.py` 中配置的 5 个固定爬虫 |
+| **数据来源** | Apple Podcasts（关键词搜索+分类排行榜） + Podcast Index API | `config.py` 中配置的 5 个固定爬虫 |
 | **URL 数量** | 无上限，两源组合覆盖数十万播客 | 单次约 1500 条 |
 | **语言** | 仅中英文 | 取决于配置 |
 | **适合场景** | 大量扩充 URL 池 | 定期检查已有播客的更新 |
