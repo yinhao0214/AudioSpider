@@ -495,7 +495,13 @@ downloads/
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=yinhao0214/AudioSpider&type=Date)](https://star-history.com/#yinhao0214/AudioSpider&Date)
+<a href="https://www.star-history.com/?repos=yinhao0214%2FAudioSpider&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=yinhao0214/AudioSpider&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=yinhao0214/AudioSpider&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=yinhao0214/AudioSpider&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## License
 
