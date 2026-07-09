@@ -156,12 +156,14 @@ class Downloader:
         limit: int = 50,
         source: str | None = None,
         category: str | None = None,
+        language: str | None = None,
         per_source: bool = False,
         per_category: bool = False,
+        items: list[dict] | None = None,
     ):
-        pending = self.storage.get_pending(
+        pending = items if items is not None else self.storage.get_pending(
             limit=limit, source=source, category=category,
-            per_source=per_source, per_category=per_category,
+            language=language, per_source=per_source, per_category=per_category,
         )
         if not pending:
             logger.info("没有待下载的音频")
@@ -228,44 +230,34 @@ class Downloader:
 
             self.storage.update_status(item["url"], "downloading")
 
-            for attempt in range(MAX_RETRIES):
-                try:
-                    await self._do_download(session, url, filepath)
+            try:
+                await self._do_download(session, url, filepath)
 
-                    content_hash = Storage.compute_file_hash(filepath)
-                    if self.storage.hash_exists(content_hash):
-                        os.remove(filepath)
-                        self.storage.update_status(item["url"], "done", f"dup:{content_hash}")
-                        self.stats["dup"] += 1
-                        return
-
-                    self.storage.set_content_hash(item["url"], content_hash)
-
-                    converted_path = await asyncio.to_thread(convert_to_target, filepath)
-                    if converted_path:
-                        filepath = converted_path
-                        filename = os.path.basename(filepath)
-                    else:
-                        logger.warning(f"{progress} 格式转换失败, 保留原始文件: {filename}")
-
-                    self.storage.update_status(item["url"], "done", filepath)
-                    self.stats["success"] += 1
-                    size_mb = os.path.getsize(filepath) / 1024 / 1024
-                    _save_meta(filepath, item, content_hash)
-                    logger.info(f"{progress} ✓ {filename} ({size_mb:.1f}MB) → {filepath}")
+                content_hash = Storage.compute_file_hash(filepath)
+                if self.storage.hash_exists(content_hash):
+                    os.remove(filepath)
+                    self.storage.update_status(item["url"], "done", f"dup:{content_hash}")
+                    self.stats["dup"] += 1
                     return
-                except Exception as e:
-                    wait = RETRY_BACKOFF ** attempt
-                    logger.warning(f"{progress} 下载失败 [{attempt+1}/{MAX_RETRIES}] {filename}: {e}")
-                    if source == "bilibili" and attempt < MAX_RETRIES - 1:
-                        fresh_url = await _resolve_bilibili_url(session, source_id)
-                        if fresh_url:
-                            url = fresh_url
-                    await asyncio.sleep(wait)
 
-            self.storage.update_status(item["url"], "failed")
-            self.stats["failed"] += 1
-            logger.error(f"{progress} ✗ {filename} | {url[:80]}")
+                self.storage.set_content_hash(item["url"], content_hash)
+
+                converted_path = await asyncio.to_thread(convert_to_target, filepath)
+                if converted_path:
+                    filepath = converted_path
+                    filename = os.path.basename(filepath)
+                else:
+                    logger.warning(f"{progress} 格式转换失败, 保留原始文件: {filename}")
+
+                self.storage.update_status(item["url"], "done", filepath)
+                self.stats["success"] += 1
+                size_mb = os.path.getsize(filepath) / 1024 / 1024
+                _save_meta(filepath, item, content_hash)
+                logger.info(f"{progress} ✓ {filename} ({size_mb:.1f}MB) → {filepath}")
+            except Exception as e:
+                self.storage.update_status(item["url"], "failed")
+                self.stats["failed"] += 1
+                logger.error(f"{progress} ✗ {filename} | {url[:80]} | {e}")
 
     def _build_subdir(self, source: str, category: str) -> str:
         parts = [DOWNLOAD_DIR]

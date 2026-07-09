@@ -71,6 +71,14 @@ def show_overview(conn: sqlite3.Connection):
         for r in rows:
             print(f"    {r['category']:12s}  {r['cnt']}")
 
+    rows = conn.execute(
+        "SELECT language, COUNT(*) AS cnt FROM audio_urls WHERE language != '' GROUP BY language ORDER BY cnt DESC"
+    ).fetchall()
+    if rows:
+        print("\n  按语种统计:")
+        for r in rows:
+            print(f"    {r['language']:12s}  {r['cnt']}")
+
     show_duration_stats(conn)
 
     cp = conn.execute("SELECT COUNT(*) FROM crawl_checkpoints").fetchone()[0]
@@ -79,7 +87,7 @@ def show_overview(conn: sqlite3.Connection):
 
 
 def show_all_records(conn: sqlite3.Connection, source_filter: str = "", status_filter: str = "",
-                     category_filter: str = "", limit: int = 0):
+                     category_filter: str = "", language_filter: str = "", limit: int = 0):
     where = "WHERE 1=1"
     filter_params: list = []
     if source_filter:
@@ -91,6 +99,9 @@ def show_all_records(conn: sqlite3.Connection, source_filter: str = "", status_f
     if category_filter:
         where += " AND category = ?"
         filter_params.append(category_filter)
+    if language_filter:
+        where += " AND language = ?"
+        filter_params.append(language_filter)
 
     total = conn.execute(f"SELECT COUNT(*) FROM audio_urls {where}", filter_params).fetchone()[0]
 
@@ -294,10 +305,11 @@ def interactive(conn: sqlite3.Connection):
         print("    2  按来源筛选记录")
         print("    3  按状态筛选记录")
         print("    4  按分类筛选记录")
-        print("    5  查看单条记录 (输入 ID)")
-        print("    6  查看爬取检查点")
-        print("    7  查看时长统计")
-        print("    8  重新显示概览")
+        print("    5  按语种筛选记录")
+        print("    6  查看单条记录 (输入 ID)")
+        print("    7  查看爬取检查点")
+        print("    8  查看时长统计")
+        print("    9  重新显示概览")
         print("    q  退出")
         print("─" * 50)
         choice = input("  请选择> ").strip().lower()
@@ -323,16 +335,25 @@ def interactive(conn: sqlite3.Connection):
         elif choice == "4":
             show_category_menu(conn)
         elif choice == "5":
+            langs = conn.execute(
+                "SELECT DISTINCT language FROM audio_urls WHERE language != '' ORDER BY language"
+            ).fetchall()
+            lang_names = " / ".join(r["language"] for r in langs)
+            lang = input(f"  输入语种代码 ({lang_names}): ").strip()
+            n = input("  显示前 N 条 (直接回车显示全部): ").strip()
+            limit = int(n) if n.isdigit() else 0
+            show_all_records(conn, language_filter=lang, limit=limit)
+        elif choice == "6":
             try:
                 rid = int(input("  输入记录 ID: ").strip())
                 show_single_record(conn, rid)
             except ValueError:
                 print("  无效 ID")
-        elif choice == "6":
-            show_checkpoints(conn)
         elif choice == "7":
-            show_duration_stats(conn)
+            show_checkpoints(conn)
         elif choice == "8":
+            show_duration_stats(conn)
+        elif choice == "9":
             show_overview(conn)
         elif choice == "q":
             print("  再见！")
@@ -369,6 +390,8 @@ def main():
             show_single_record(conn, int(args[1]))
         elif args[0] == "category" and len(args) > 1:
             show_all_records(conn, category_filter=args[1], limit=limit)
+        elif args[0] == "language" and len(args) > 1:
+            show_all_records(conn, language_filter=args[1], limit=limit)
         elif args[0] == "categories":
             show_category_menu(conn)
         elif args[0] == "checkpoints":
@@ -383,6 +406,7 @@ def main():
             print("  python db_viewer.py source NAME [-n N] 按来源筛选")
             print("  python db_viewer.py status NAME [-n N] 按状态筛选")
             print("  python db_viewer.py category NAME [-n N] 按分类筛选")
+            print("  python db_viewer.py language CODE [-n N] 按语种筛选 (如 zh, en)")
             print("  python db_viewer.py categories         查看分类概览")
             print("  python db_viewer.py id NUM             查看指定 ID")
             print("  python db_viewer.py checkpoints        查看爬取检查点")

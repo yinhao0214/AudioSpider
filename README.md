@@ -233,14 +233,19 @@ python main.py --source podcast_rss --limit 100
 python main.py --category 播客 --limit 100
 python main.py --category 有声书 --limit 50
 
+# 指定语种
+python main.py --language zh --limit 1000    # 仅下载中文
+python main.py --language en --limit 500     # 仅下载英文
+
 # 每个来源各下载 N 条
 python main.py --per-source --limit 20
 
 # 每个分类各下载 N 条
 python main.py --per-category --limit 10
 
-# 组合过滤（来源 + 分类）
+# 组合过滤（来源 + 分类 + 语种）
 python main.py --source bilibili --category 有声书 --limit 50
+python main.py --language zh --source podcast_rss --limit 200
 
 # 20 并发下载（默认 20）
 python main.py --workers 20
@@ -252,6 +257,10 @@ python main.py --loop
 python main.py --limit 999999999
 
 # 中断后重启会自动恢复：downloading 状态自动重置为 pending，不会丢失进度
+
+# 重试之前下载失败的 URL（只下载 failed 状态的，成功改 done，仍失败保持 failed）
+python main.py --retry-failed
+python main.py --retry-failed --limit 1000
 
 # 查看统计
 python main.py stats
@@ -272,6 +281,10 @@ python db_viewer.py overview
 # 按来源/状态筛选
 python db_viewer.py source bilibili -n 10
 python db_viewer.py status done -n 20
+
+# 按语种筛选
+python db_viewer.py language zh -n 10
+python db_viewer.py language en -n 20
 
 # 查看指定记录
 python db_viewer.py id 42

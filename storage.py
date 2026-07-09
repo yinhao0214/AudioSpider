@@ -149,6 +149,7 @@ class Storage:
         limit: int = 50,
         source: str | None = None,
         category: str | None = None,
+        language: str | None = None,
         per_source: bool = False,
         per_category: bool = False,
     ) -> list[dict]:
@@ -167,6 +168,9 @@ class Storage:
         if category:
             conditions.append("category=?")
             params.append(category)
+        if language:
+            conditions.append("language=?")
+            params.append(language)
 
         where = " AND ".join(conditions)
         params.append(limit)
@@ -202,6 +206,14 @@ class Storage:
         else:
             conn.execute("UPDATE audio_urls SET status=? WHERE url=?", (status, url))
         conn.commit()
+
+    def get_failed(self, limit: int = 50) -> list[dict]:
+        """获取所有 failed 状态的 URL"""
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM audio_urls WHERE status='failed' ORDER BY id LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def set_content_hash(self, url: str, content_hash: str):
         conn = self._get_conn()

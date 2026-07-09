@@ -8,10 +8,13 @@
     python main.py --limit 200               # 下载 200 条
     python main.py --source xiaoyuzhou       # 仅下载指定来源
     python main.py --category 播客           # 仅下载指定分类
+    python main.py --language zh             # 仅下载中文音频
+    python main.py --language en             # 仅下载英文音频
     python main.py --per-source --limit 20   # 每个来源各下载 20 条
     python main.py --per-category --limit 10 # 每个分类各下载 10 条
     python main.py --workers 10              # 10 并发下载
     python main.py --loop                    # 持续消费下载
+    python main.py --retry-failed            # 重试所有失败的 URL
     python main.py stats                     # 查看统计 + 已下载文件
 """
 
@@ -45,10 +48,13 @@ def main():
                         help="download=下载(默认), stats=统计, fix-meta=补生成元信息JSON")
     parser.add_argument("--source", default=None, help="仅下载指定来源 (如 podcast_rss, bilibili)")
     parser.add_argument("--category", default=None, help="仅下载指定分类 (如 播客, 有声书)")
+    parser.add_argument("--language", default=None, help="仅下载指定语种 (如 zh, en)")
     parser.add_argument("--per-source", action="store_true", help="每个来源各下载 --limit 条")
     parser.add_argument("--per-category", action="store_true", help="每个分类各下载 --limit 条")
     parser.add_argument("--limit", type=int, default=50, help="单批下载数量(默认50)")
     parser.add_argument("--workers", type=int, default=None, help="并发下载数(默认5)")
+    parser.add_argument("--retry-failed", action="store_true",
+                        help="将所有 failed 状态重置为 pending 并重新下载")
     parser.add_argument("--loop", action="store_true", help="持续循环消费下载")
     parser.add_argument("--interval", type=int, default=60, help="循环间隔秒数(默认60)")
 
@@ -65,10 +71,26 @@ def main():
         fix_meta(storage)
         return
 
+    if args.retry_failed:
+        failed_items = storage.get_failed(limit=args.limit)
+        logger = logging.getLogger("download")
+        if not failed_items:
+            logger.info("没有失败的 URL 需要重试")
+            return
+        logger.info(f"准备重试 {len(failed_items)} 条失败的 URL")
+
+        async def retry():
+            dl = Downloader(storage, max_workers=args.workers)
+            return await dl.download_all(items=failed_items)
+        asyncio.run(retry())
+        storage.show_stats()
+        return
+
     dl_kwargs = dict(
         limit=args.limit,
         source=args.source,
         category=args.category,
+        language=args.language,
         per_source=args.per_source,
         per_category=args.per_category,
     )
