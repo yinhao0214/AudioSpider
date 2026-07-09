@@ -493,6 +493,10 @@ downloads/
 
 本项目仅供学习和研究使用。使用者应遵守相关网站的服务条款和版权法律。请勿将爬取的数据用于未经授权的商业用途。对因使用本工具产生的任何法律问题，项目作者不承担任何责任。
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=yinhao0214/AudioSpider&type=Date)](https://star-history.com/#yinhao0214/AudioSpider&Date)
+
 ## License
 
 本项目基于 [MIT License](LICENSE) 开源。
