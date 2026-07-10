@@ -252,9 +252,10 @@ class FeedStore:
     """管理已发现的 RSS feeds，避免重复搜索"""
 
     def __init__(self, db_path: str = DB_PATH):
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, timeout=30)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA temp_store = MEMORY")
+        self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS discovered_feeds (
                 feed_url TEXT PRIMARY KEY,
@@ -736,12 +737,14 @@ def _store_podcasts(feed_store: FeedStore, podcasts: list[dict], via: str) -> in
 
 async def discover_and_collect(keywords: list[str], top: int = 200,
                                 sources: list[str] | None = None,
-                                pi_max_pages: int = 20):
+                                pi_max_pages: int = 20,
+                                parse_only: bool = False):
     """主流程：搜索 → 发现 feeds → 解析 → 入库
 
     Args:
         sources: 启用的数据源，可选 "apple", "podcastindex"，默认全部启用
         pi_max_pages: Podcast Index recent feeds 最大翻页数
+        parse_only: 若为 True，跳过发现阶段，只解析未解析的 feeds
     """
     active = set(sources or ["apple", "podcastindex"])
     if "apple" in active:
@@ -750,73 +753,76 @@ async def discover_and_collect(keywords: list[str], top: int = 200,
     feed_store = FeedStore()
     storage = Storage()
 
-    logger.info(f"开始自动发现, 启用源: {active}")
     new_feeds = 0
 
-    async with aiohttp.ClientSession() as session:
+    if parse_only:
+        logger.info("跳过发现阶段，直接解析未解析的 feeds...")
+    else:
+        logger.info(f"开始自动发现, 启用源: {active}")
+        async with aiohttp.ClientSession() as session:
 
-        # ── Apple Podcasts 关键词搜索 ──
-        if "apple_keyword" in active:
-            logger.info(f"\n{'='*50}")
-            logger.info(f"[Apple] 关键词搜索: {len(keywords)} 个关键词, 每词最多 {top} 个")
-            logger.info(f"{'='*50}")
-            for i, keyword in enumerate(keywords, 1):
-                for country in APPLE_SEARCH_COUNTRIES:
-                    await random_delay(0.5, 1.5)
-                    podcasts = await search_apple_podcasts(session, keyword, limit=top, country=country)
-                    added = _store_podcasts(feed_store, podcasts, f"apple_kw:{keyword}:{country}")
-                    new_feeds += added
-                if i % 10 == 0:
-                    logger.info(f"  关键词进度: {i}/{len(keywords)}, 累计新增 {new_feeds} 个 feeds")
-
-        # ── Apple Podcasts 分类遍历 ──
-        if "apple_genre" in active:
-            logger.info(f"\n{'='*50}")
-            logger.info(f"[Apple] 分类遍历: {len(APPLE_PODCAST_GENRES)} 个分类 × {len(APPLE_SEARCH_COUNTRIES)} 个地区")
-            logger.info(f"{'='*50}")
-            genre_count = 0
-            for genre_id, genre_name in APPLE_PODCAST_GENRES.items():
-                for country in APPLE_SEARCH_COUNTRIES:
-                    await random_delay(0.5, 1.5)
-                    podcasts = await search_apple_by_genre(session, genre_id, genre_name, country)
-                    added = _store_podcasts(feed_store, podcasts, f"apple_genre:{genre_id}:{country}")
-                    new_feeds += added
-                    genre_count += 1
-                if genre_count % 20 == 0:
-                    logger.info(f"  分类进度: {genre_count}/{len(APPLE_PODCAST_GENRES) * len(APPLE_SEARCH_COUNTRIES)}, "
-                                f"累计新增 {new_feeds} 个 feeds")
-
-        # ── Podcast Index（关键词搜索 + 热门 + 最近更新分页遍历）──
-        if "podcastindex" in active:
-            if not PODCAST_INDEX_KEY or not PODCAST_INDEX_SECRET:
-                logger.warning(
-                    "[PodcastIndex] 未配置 API Key，跳过。"
-                    "请设置环境变量 PODCAST_INDEX_KEY 和 PODCAST_INDEX_SECRET，"
-                    "或在 config.py 中配置。免费注册: https://api.podcastindex.org/"
-                )
-            else:
+            # ── Apple Podcasts 关键词搜索 ──
+            if "apple_keyword" in active:
                 logger.info(f"\n{'='*50}")
-                logger.info(f"[PodcastIndex] 开始搜索")
+                logger.info(f"[Apple] 关键词搜索: {len(keywords)} 个关键词, 每词最多 {top} 个")
                 logger.info(f"{'='*50}")
+                for i, keyword in enumerate(keywords, 1):
+                    for country in APPLE_SEARCH_COUNTRIES:
+                        await random_delay(0.5, 1.5)
+                        podcasts = await search_apple_podcasts(session, keyword, limit=top, country=country)
+                        added = _store_podcasts(feed_store, podcasts, f"apple_kw:{keyword}:{country}")
+                        new_feeds += added
+                    if i % 10 == 0:
+                        logger.info(f"  关键词进度: {i}/{len(keywords)}, 累计新增 {new_feeds} 个 feeds")
 
-                logger.info("[PodcastIndex] 关键词搜索...")
-                for keyword in keywords:
-                    await random_delay(0.3, 0.8)
-                    podcasts = await pi_search(session, keyword)
-                    added = _store_podcasts(feed_store, podcasts, f"pi_search:{keyword}")
+            # ── Apple Podcasts 分类遍历 ──
+            if "apple_genre" in active:
+                logger.info(f"\n{'='*50}")
+                logger.info(f"[Apple] 分类遍历: {len(APPLE_PODCAST_GENRES)} 个分类 × {len(APPLE_SEARCH_COUNTRIES)} 个地区")
+                logger.info(f"{'='*50}")
+                genre_count = 0
+                for genre_id, genre_name in APPLE_PODCAST_GENRES.items():
+                    for country in APPLE_SEARCH_COUNTRIES:
+                        await random_delay(0.5, 1.5)
+                        podcasts = await search_apple_by_genre(session, genre_id, genre_name, country)
+                        added = _store_podcasts(feed_store, podcasts, f"apple_genre:{genre_id}:{country}")
+                        new_feeds += added
+                        genre_count += 1
+                    if genre_count % 20 == 0:
+                        logger.info(f"  分类进度: {genre_count}/{len(APPLE_PODCAST_GENRES) * len(APPLE_SEARCH_COUNTRIES)}, "
+                                    f"累计新增 {new_feeds} 个 feeds")
+
+            # ── Podcast Index（关键词搜索 + 热门 + 最近更新分页遍历）──
+            if "podcastindex" in active:
+                if not PODCAST_INDEX_KEY or not PODCAST_INDEX_SECRET:
+                    logger.warning(
+                        "[PodcastIndex] 未配置 API Key，跳过。"
+                        "请设置环境变量 PODCAST_INDEX_KEY 和 PODCAST_INDEX_SECRET，"
+                        "或在 config.py 中配置。免费注册: https://api.podcastindex.org/"
+                    )
+                else:
+                    logger.info(f"\n{'='*50}")
+                    logger.info(f"[PodcastIndex] 开始搜索")
+                    logger.info(f"{'='*50}")
+
+                    logger.info("[PodcastIndex] 关键词搜索...")
+                    for keyword in keywords:
+                        await random_delay(0.3, 0.8)
+                        podcasts = await pi_search(session, keyword)
+                        added = _store_podcasts(feed_store, podcasts, f"pi_search:{keyword}")
+                        new_feeds += added
+
+                    logger.info("[PodcastIndex] 获取热门播客...")
+                    podcasts = await pi_trending(session, max_results=1000)
+                    added = _store_podcasts(feed_store, podcasts, "pi_trending")
                     new_feeds += added
 
-                logger.info("[PodcastIndex] 获取热门播客...")
-                podcasts = await pi_trending(session, max_results=1000)
-                added = _store_podcasts(feed_store, podcasts, "pi_trending")
-                new_feeds += added
+                    logger.info(f"[PodcastIndex] 遍历最近更新的 feeds (最多 {pi_max_pages} 页)...")
+                    podcasts = await pi_recent_feeds(session, max_pages=pi_max_pages)
+                    added = _store_podcasts(feed_store, podcasts, "pi_recent")
+                    new_feeds += added
 
-                logger.info(f"[PodcastIndex] 遍历最近更新的 feeds (最多 {pi_max_pages} 页)...")
-                podcasts = await pi_recent_feeds(session, max_pages=pi_max_pages)
-                added = _store_podcasts(feed_store, podcasts, "pi_recent")
-                new_feeds += added
-
-    logger.info(f"\n发现阶段完成: 新增 {new_feeds} 个 RSS feeds, 总计 {feed_store.count()} 个")
+        logger.info(f"\n发现阶段完成: 新增 {new_feeds} 个 RSS feeds, 总计 {feed_store.count()} 个")
 
     # ── 解析未爬取过的 feeds ──
     uncrawled = feed_store.get_uncrawled()
@@ -881,6 +887,8 @@ def main():
                         help="Podcast Index recent feeds 最大翻页数(默认20, 每页1000条)")
     parser.add_argument("--loop", action="store_true", help="持续循环发现")
     parser.add_argument("--interval", type=int, default=86400, help="循环间隔秒数(默认1天)")
+    parser.add_argument("--parse-only", action="store_true",
+                        help="跳过发现阶段，只解析数据库中未解析的 feeds")
     parser.add_argument("--list-feeds", action="store_true", help="列出所有已发现的 feeds")
     parser.add_argument("--stats", action="store_true", help="显示已发现 feeds 的统计信息")
 
@@ -935,14 +943,16 @@ def main():
                 logger.info(f"{'#' * 60}")
                 await discover_and_collect(keywords, args.top,
                                             sources=sources,
-                                            pi_max_pages=args.pi_max_pages)
+                                            pi_max_pages=args.pi_max_pages,
+                                            parse_only=args.parse_only)
                 logger.info(f"等待 {args.interval} 秒...")
                 await asyncio.sleep(args.interval)
         asyncio.run(loop())
     else:
         asyncio.run(discover_and_collect(keywords, args.top,
                                           sources=sources,
-                                          pi_max_pages=args.pi_max_pages))
+                                          pi_max_pages=args.pi_max_pages,
+                                          parse_only=args.parse_only))
 
 
 if __name__ == "__main__":

@@ -508,9 +508,9 @@ downloads/
 
 <a href="https://www.star-history.com/?repos=yinhao0214%2FAudioSpider&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=yinhao0214/AudioSpider&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=yinhao0214/AudioSpider&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=yinhao0214/AudioSpider&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=yinhao0214/AudioSpider&type=date&theme=dark&legend=top-left&sealed_token=D5R_Z6d7UsoI9QVm3JJRGwpWQ5r4j-yiYZ8qVuG8RmGzPwV4mBJ7Byne0d1MlMvZ7QklAQDUvIZYhB2rftHj1b1Tn5C00hkKkcvb_2ATrVkmWrrXK9FRwI5t79cpfCPBPBlsynaR5ezAaIAmwX7VVcrN7FiZo1XygK1HQGqGvutFODzftmImZ4w_Du9_" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=yinhao0214/AudioSpider&type=date&legend=top-left&sealed_token=D5R_Z6d7UsoI9QVm3JJRGwpWQ5r4j-yiYZ8qVuG8RmGzPwV4mBJ7Byne0d1MlMvZ7QklAQDUvIZYhB2rftHj1b1Tn5C00hkKkcvb_2ATrVkmWrrXK9FRwI5t79cpfCPBPBlsynaR5ezAaIAmwX7VVcrN7FiZo1XygK1HQGqGvutFODzftmImZ4w_Du9_" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=yinhao0214/AudioSpider&type=date&legend=top-left&sealed_token=D5R_Z6d7UsoI9QVm3JJRGwpWQ5r4j-yiYZ8qVuG8RmGzPwV4mBJ7Byne0d1MlMvZ7QklAQDUvIZYhB2rftHj1b1Tn5C00hkKkcvb_2ATrVkmWrrXK9FRwI5t79cpfCPBPBlsynaR5ezAaIAmwX7VVcrN7FiZo1XygK1HQGqGvutFODzftmImZ4w_Du9_" />
  </picture>
 </a>
 
