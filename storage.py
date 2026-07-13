@@ -27,6 +27,7 @@ class AudioRecord:
     local_path: str = ""
     content_hash: str = ""
     source_id: str = ""
+    published_at: str = ""
     discovered_at: str = ""
     downloaded_at: str = ""
 
@@ -64,6 +65,7 @@ class Storage:
                 local_path TEXT DEFAULT '',
                 content_hash TEXT DEFAULT '',
                 source_id TEXT DEFAULT '',
+                published_at TEXT DEFAULT '',
                 discovered_at TEXT NOT NULL,
                 downloaded_at TEXT DEFAULT ''
             );
@@ -81,6 +83,11 @@ class Storage:
                 PRIMARY KEY (source, checkpoint_key)
             );
         """)
+        # 迁移：添加 published_at 字段（v2.0+）
+        try:
+            conn.execute("ALTER TABLE audio_urls ADD COLUMN published_at TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass  # 字段已存在
         # 启动时把中断的 downloading 状态恢复为 pending，确保重启后能重新下载
         conn.execute("UPDATE audio_urls SET status='pending' WHERE status='downloading'")
         conn.commit()
@@ -131,15 +138,15 @@ class Storage:
         rows = [
             (r.url, r.source, r.title, r.file_format, r.file_size,
              r.duration, r.language, r.category, r.speaker,
-             r.status, r.source_id, r.discovered_at or now)
+             r.status, r.source_id, r.published_at or "", r.discovered_at or now)
             for r in records
         ]
         before = conn.total_changes
         conn.executemany(
             "INSERT OR IGNORE INTO audio_urls "
             "(url, source, title, file_format, file_size, duration, language, "
-            "category, speaker, status, source_id, discovered_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "category, speaker, status, source_id, published_at, discovered_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         conn.commit()
@@ -153,13 +160,15 @@ class Storage:
         language: str | None = None,
         per_source: bool = False,
         per_category: bool = False,
+        published_since: str | None = None,
+        published_before: str | None = None,
     ) -> list[dict]:
         conn = self._get_conn()
 
         if per_source:
-            return self._get_pending_per_group("source", limit)
+            return self._get_pending_per_group("source", limit, published_since, published_before)
         if per_category:
-            return self._get_pending_per_group("category", limit)
+            return self._get_pending_per_group("category", limit, published_since, published_before)
 
         conditions = ["status='pending'"]
         params: list = []
@@ -172,6 +181,12 @@ class Storage:
         if language:
             conditions.append("language=?")
             params.append(language)
+        if published_since:
+            conditions.append("published_at >= ?")
+            params.append(published_since)
+        if published_before:
+            conditions.append("published_at <= ?")
+            params.append(published_before)
 
         where = " AND ".join(conditions)
         params.append(limit)
@@ -180,19 +195,30 @@ class Storage:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def _get_pending_per_group(self, group_col: str, limit_per_group: int) -> list[dict]:
+    def _get_pending_per_group(self, group_col: str, limit_per_group: int,
+                               published_since: str | None = None,
+                               published_before: str | None = None) -> list[dict]:
         """每个分组取 limit 条，合并返回"""
         conn = self._get_conn()
+        date_cond = ""
+        date_params: list = []
+        if published_since:
+            date_cond += " AND published_at >= ?"
+            date_params.append(published_since)
+        if published_before:
+            date_cond += " AND published_at <= ?"
+            date_params.append(published_before)
         groups = conn.execute(
-            f"SELECT DISTINCT {group_col} FROM audio_urls WHERE status='pending' AND {group_col}!=''"
+            f"SELECT DISTINCT {group_col} FROM audio_urls WHERE status='pending' AND {group_col}!=''{date_cond}",
+            date_params,
         ).fetchall()
 
         results = []
         for row in groups:
             group_val = row[0]
             rows = conn.execute(
-                f"SELECT * FROM audio_urls WHERE status='pending' AND {group_col}=? ORDER BY id LIMIT ?",
-                (group_val, limit_per_group),
+                f"SELECT * FROM audio_urls WHERE status='pending' AND {group_col}=?{date_cond} ORDER BY id LIMIT ?",
+                (group_val, *date_params, limit_per_group),
             ).fetchall()
             results.extend(dict(r) for r in rows)
         return results

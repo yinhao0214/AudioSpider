@@ -604,6 +604,7 @@ _RE_ENCLOSURE_LENGTH = re.compile(r'<enclosure\s[^>]*?length=["\'](\d+)["\']', r
 _RE_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.S)
 _RE_GUID = re.compile(r"<guid[^>]*>(.*?)</guid>", re.S)
 _RE_DURATION = re.compile(r"<(?:itunes:)?duration[^>]*>(.*?)</(?:itunes:)?duration>", re.S)
+_RE_PUBDATE = re.compile(r"<pubDate[^>]*>(.*?)</pubDate>", re.S | re.I)
 _RE_CDATA = re.compile(r"<!\[CDATA\[(.*?)\]\]>", re.S)
 
 
@@ -688,6 +689,9 @@ async def parse_rss_feed(session: aiohttp.ClientSession,
                 m_len = _RE_ENCLOSURE_LENGTH.search(item_text)
                 size = int(m_len.group(1)) if m_len else 0
 
+                m_pub = _RE_PUBDATE.search(item_text)
+                published_at = _parse_pubdate(m_pub.group(1).strip()) if m_pub else ""
+
                 ext = audio_url.rsplit(".", 1)[-1].split("?")[0].lower()
                 fmt = ext if ext in ("m4a", "ogg", "aac", "wav", "opus") else "mp3"
 
@@ -699,12 +703,23 @@ async def parse_rss_feed(session: aiohttp.ClientSession,
                     file_size=size, duration=duration,
                     category=category, language=language,
                     speaker=podcast_title, source_id=guid,
+                    published_at=published_at,
                 )
                 records.append(record)
 
     except Exception as e:
         logger.debug(f"RSS 解析失败 {feed_url}: {e}")
     return records
+
+
+def _parse_pubdate(text: str) -> str:
+    """解析 RSS pubDate 为 ISO 8601"""
+    from email.utils import parsedate_to_datetime
+    try:
+        dt = parsedate_to_datetime(text)
+        return dt.isoformat()
+    except Exception:
+        return ""
 
 
 def _parse_duration(text: str) -> int:
