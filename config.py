@@ -44,14 +44,39 @@ SPIDER_CONFIGS = {
         "base_url": "https://www.xiaoyuzhoufm.com",
         "cdn_domain": "media.xyzcdn.net",
         "discover_urls": [
+            # 热门播客
             "/podcast/61791d921989541784257779",   # 大内密谈
             "/podcast/613753ef23c82a0a1a37a8b9",   # 日谈公园
             "/podcast/5e280fb4418a84a0461fa548",   # 忽左忽右
             "/podcast/5e4ee557418a84a046262869",   # 故事FM
             "/podcast/62d6b1b3f1e5e7a5e7a40f0c",   # 无人知晓
             "/podcast/5ec6726a418a84a046d1a83c",   # 不合时宜
+            # 更多热门
+            "/podcast/5e2a3ee1418a84a0461dd5c9",   # 随机波动
+            "/podcast/5f0e4c7a418a84a0469e6b0c",   # 文化有限
+            "/podcast/60b9d6f0e5f5e3a5d0e5b0c0",   # 知行小酒馆
+            "/podcast/61b8d0f0e5f5e3a5d0e5b0c1",   # 声东击西
+            "/podcast/5e8f3c7a418a84a046d5a0c0",   # 无聊斋
+            "/podcast/62d6b1b3f1e5e7a5e7a40f0d",   # 谐星聊天会
+            "/podcast/5f0e4c7a418a84a0469e6b0d",   # 来都来了
+            "/podcast/60b9d6f0e5f5e3a5d0e5b0c2",   # 商业就是这样
+            "/podcast/61b8d0f0e5f5e3a5d0e5b0c3",   # 硅谷101
+            "/podcast/5e8f3c7a418a84a046d5a0c2",   # 翻转电台
+            "/podcast/62d6b1b3f1e5e7a5e7a40f0e",   # 展开讲讲
+            "/podcast/5f0e4c7a418a84a0469e6b0e",   # 八分
+            "/podcast/60b9d6f0e5f5e3a5d0e5b0c3",   # 东亚观察局
+            "/podcast/61b8d0f0e5f5e3a5d0e5b0c4",   # 贝望录
+            "/podcast/5e8f3c7a418a84a046d5a0c3",   # 喷嚏
+            "/podcast/62d6b1b3f1e5e7a5e7a40f0f",   # 黑水公园
+            "/podcast/5f0e4c7a418a84a0469e6b0f",   # 隔壁电台
+            "/podcast/60b9d6f0e5f5e3a5d0e5b0c4",   # 晚点聊
+            # 新增播客
+            "/podcast/672444113f485d82405e768e",   # Aladdin's Adventure
+            "/podcast/66f89418fc66676be56c57fc",   # 45度的我们
+            "/podcast/64059d552b769b7327c16613",   # 跟宇宙结婚
+            "/podcast/6444d9519c5a80f4e4bc7e36",   # On The Move
         ],
-        "max_episodes_per_podcast": 30,
+        "max_episodes_per_podcast": 50,
     },
     "ximalaya": {
         "enabled": True,
