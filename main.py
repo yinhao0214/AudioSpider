@@ -57,6 +57,10 @@ def main():
                         help="将所有 failed 状态重置为 pending 并重新下载")
     parser.add_argument("--loop", action="store_true", help="持续循环消费下载")
     parser.add_argument("--interval", type=int, default=60, help="循环间隔秒数(默认60)")
+    parser.add_argument("--since", default=None,
+                        help="仅下载发布时间 >= 此日期的 (如 2024-01-01)")
+    parser.add_argument("--before", default=None,
+                        help="仅下载发布时间 <= 此日期的 (如 2024-12-31)")
 
     args = parser.parse_args()
     setup_logging()
@@ -93,6 +97,8 @@ def main():
         language=args.language,
         per_source=args.per_source,
         per_category=args.per_category,
+        published_since=args.since,
+        published_before=args.before,
     )
 
     async def download_once():

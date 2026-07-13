@@ -159,11 +159,14 @@ class Downloader:
         language: str | None = None,
         per_source: bool = False,
         per_category: bool = False,
+        published_since: str | None = None,
+        published_before: str | None = None,
         items: list[dict] | None = None,
     ):
         pending = items if items is not None else self.storage.get_pending(
             limit=limit, source=source, category=category,
             language=language, per_source=per_source, per_category=per_category,
+            published_since=published_since, published_before=published_before,
         )
         if not pending:
             logger.info("没有待下载的音频")
