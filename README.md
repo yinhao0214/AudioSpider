@@ -299,15 +299,24 @@ python main.py --workers 20
 python main.py --format opus
 python main.py --format original
 
-# 持续消费下载（每 60 秒检查一次，每轮下载 --limit 条）
+# 持续消费下载：有任务时立即处理下一批，无任务时每 60 秒检查一次
 python main.py --loop
+
+# 平台过滤使用独立 ID 游标；新入库且符合条件的 URL 会在后续轮次自动下载。
+# 修改了历史记录的语种/URL，或希望从头复查时，需带上完全相同的过滤条件重置游标。
+python main.py --language zh --limit 1000 --reset-filter-cursor \
+  --exclude-platform ximalaya \
+  --exclude-platform lizhi \
+  --exclude-platform xiaoyuzhou \
+  --exclude-platform qingting \
+  --exclude-platform bilibili
 
 # 全量下载数据库中所有待下载 URL
 python main.py --limit 999999999
 
 # 中断后重启会自动恢复：downloading 状态自动重置为 pending，不会丢失进度
 
-# 重试之前下载失败的 URL（只下载 failed 状态的，成功改 done，仍失败保持 failed）
+# 重试之前下载失败的 URL（每次最多 --limit 条；再次失败改 retry_failed）
 python main.py --retry-failed
 python main.py --retry-failed --limit 1000
 python main.py --retry-failed --source bilibili --limit 1000  # 只重试指定来源

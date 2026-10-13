@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import subprocess
+from collections import Counter
 from urllib.parse import urlparse, unquote
 
 import aiohttp
@@ -34,6 +35,17 @@ REFERER_MAP = {
 BILIBILI_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     "Referer": "https://www.bilibili.com",
+}
+
+LIZHI_HOST = "cdn.lizhi.fm"
+LIZHI_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "*/*",
+    "Accept-Encoding": "identity",
+    "Referer": "https://www.lizhi.fm/",
+    "Connection": "keep-alive",
 }
 
 
@@ -65,6 +77,16 @@ def _guess_referer(url: str) -> str:
         if domain in host:
             return ref
     return urlparse(url).scheme + "://" + urlparse(url).netloc + "/"
+
+
+def _is_lizhi_url(url: str) -> bool:
+    return urlparse(url).netloc.lower() == LIZHI_HOST
+
+
+def _build_download_headers(url: str) -> dict:
+    if _is_lizhi_url(url):
+        return LIZHI_HEADERS.copy()
+    return build_headers(_guess_referer(url))
 
 
 async def _resolve_bilibili_url(session: aiohttp.ClientSession, source_id: str) -> str:
@@ -145,11 +167,13 @@ def convert_to_target(filepath: str) -> str | None:
 
 class Downloader:
     def __init__(self, storage: Storage, max_workers: int | None = None,
-                 convert: bool = True):
+                 convert: bool = True, failure_status: str = "failed"):
         self.storage = storage
         self.max_workers = max_workers or MAX_CONCURRENT_DOWNLOADS
         self.convert = convert
+        self.failure_status = failure_status
         self.semaphore = asyncio.Semaphore(self.max_workers)
+        self.lizhi_semaphore = asyncio.Semaphore(1)
         self.stats = {"success": 0, "failed": 0, "skipped": 0, "dup": 0}
         self._connector = None
 
@@ -163,23 +187,43 @@ class Downloader:
         per_category: bool = False,
         published_since: str | None = None,
         published_before: str | None = None,
+        host_max_share: float = 0.0,
         items: list[dict] | None = None,
     ):
         pending = items if items is not None else self.storage.get_pending(
             limit=limit, source=source, category=category,
             language=language, per_source=per_source, per_category=per_category,
             published_since=published_since, published_before=published_before,
+            host_max_share=host_max_share,
         )
         if not pending:
             logger.info("没有待下载的音频")
             return self.stats
 
         total = len(pending)
+        if host_max_share > 0:
+            host_counts = Counter(
+                urlparse(item["url"]).netloc.lower() or "(unknown)"
+                for item in pending
+            )
+            top_hosts = "、".join(
+                f"{host}={count}"
+                for host, count in host_counts.most_common(5)
+            )
+            logger.info(
+                "本轮域名混排: 域名=%d，最大单域名占比=%.1f%%，前五=%s",
+                len(host_counts),
+                max(host_counts.values()) * 100 / total,
+                top_hosts,
+            )
         fmt_hint = "opus" if self.convert else "原始格式"
         logger.info(f"开始下载 {total} 个音频文件 (并发={self.max_workers}, 保存={fmt_hint})...")
 
         self._connector = aiohttp.TCPConnector(limit=self.max_workers, limit_per_host=3)
-        async with aiohttp.ClientSession(connector=self._connector) as session:
+        async with aiohttp.ClientSession(
+            connector=self._connector,
+            trust_env=True,
+        ) as session:
             # B站需要先获取 cookie
             has_bilibili = any(item.get("source") == "bilibili" for item in pending)
             if has_bilibili:
@@ -214,7 +258,7 @@ class Downloader:
                     url = fresh_url
                 else:
                     logger.warning(f"[{idx}/{total}] B站URL刷新失败, 跳过: {title}")
-                    self.storage.update_status(item["url"], "failed")
+                    self.storage.update_status(item["url"], self.failure_status)
                     self.stats["failed"] += 1
                     return
                 await random_delay(0.5, 1.0)
@@ -262,9 +306,12 @@ class Downloader:
                 _save_meta(filepath, item, content_hash)
                 logger.info(f"{progress} ✓ {filename} ({size_mb:.1f}MB) → {filepath}")
             except Exception as e:
-                self.storage.update_status(item["url"], "failed")
+                self.storage.update_status(item["url"], self.failure_status)
                 self.stats["failed"] += 1
-                logger.error(f"{progress} ✗ {filename} | {url[:80]} | {e}")
+                logger.error(
+                    f"{progress} ✗ {filename} | {url[:80]} | "
+                    f"{type(e).__name__}: {e}"
+                )
 
     def _build_subdir(self, source: str, category: str) -> str:
         parts = [DOWNLOAD_DIR]
@@ -279,30 +326,58 @@ class Downloader:
         return subdir
 
     async def _do_download(self, session: aiohttp.ClientSession, url: str, filepath: str):
-        referer = _guess_referer(url)
-        headers = build_headers(referer)
+        if _is_lizhi_url(url):
+            async with self.lizhi_semaphore:
+                await self._download_request(session, url, filepath, retry_lizhi_403=True)
+                await random_delay(0.5, 1.0)
+            return
 
-        existing_size = 0
-        if os.path.exists(filepath):
-            existing_size = os.path.getsize(filepath)
-            headers["Range"] = f"bytes={existing_size}-"
+        await self._download_request(session, url, filepath, retry_lizhi_403=False)
+        await random_delay(0.2, 0.5)
 
+    async def _download_request(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        filepath: str,
+        retry_lizhi_403: bool,
+    ):
+        attempts = 2 if retry_lizhi_403 else 1
         timeout = aiohttp.ClientTimeout(total=DOWNLOAD_TIMEOUT)
         proxy = get_aio_proxy()
 
-        async with session.get(url, headers=headers, timeout=timeout,
-                               proxy=proxy, allow_redirects=True) as resp:
-            if resp.status == 416:
-                return
-            if resp.status not in (200, 206):
-                raise Exception(f"HTTP {resp.status}")
+        for attempt in range(attempts):
+            headers = _build_download_headers(url)
 
-            mode = "ab" if resp.status == 206 else "wb"
-            async with aiofiles.open(filepath, mode) as f:
-                async for chunk in resp.content.iter_chunked(CHUNK_SIZE):
-                    await f.write(chunk)
+            existing_size = 0
+            if os.path.exists(filepath):
+                existing_size = os.path.getsize(filepath)
+                headers["Range"] = f"bytes={existing_size}-"
 
-        await random_delay(0.2, 0.5)
+            should_retry = False
+            async with session.get(
+                url,
+                headers=headers,
+                timeout=timeout,
+                proxy=proxy,
+                allow_redirects=True,
+            ) as resp:
+                if resp.status == 403 and retry_lizhi_403 and attempt == 0:
+                    should_retry = True
+                elif resp.status == 416:
+                    return
+                elif resp.status not in (200, 206):
+                    raise Exception(f"HTTP {resp.status}")
+                else:
+                    mode = "ab" if resp.status == 206 else "wb"
+                    async with aiofiles.open(filepath, mode) as f:
+                        async for chunk in resp.content.iter_chunked(CHUNK_SIZE):
+                            await f.write(chunk)
+                    return
+
+            if should_retry:
+                logger.warning(f"荔枝 CDN 返回 HTTP 403，3-6 秒后重试一次: {url[:100]}")
+                await random_delay(3.0, 6.0)
 
 
 def _save_meta(filepath: str, item: dict, content_hash: str = ""):

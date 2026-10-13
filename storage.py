@@ -6,8 +6,10 @@ import hashlib
 import os
 import sqlite3
 import threading
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlparse
 
 from config import DB_PATH, DOWNLOAD_DIR
 
@@ -88,8 +90,6 @@ class Storage:
             conn.execute("ALTER TABLE audio_urls ADD COLUMN published_at TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass  # 字段已存在
-        # 启动时把中断的 downloading 状态恢复为 pending，确保重启后能重新下载
-        conn.execute("UPDATE audio_urls SET status='pending' WHERE status='downloading'")
         conn.commit()
 
     # ── 增量爬取标记 ──
@@ -110,6 +110,15 @@ class Storage:
             (source, key, value, datetime.now().isoformat()),
         )
         conn.commit()
+
+    def recover_interrupted_downloads(self) -> int:
+        """下载器启动时恢复上次中断的任务；采集进程不会触碰下载状态。"""
+        conn = self._get_conn()
+        before = conn.total_changes
+        conn.execute("UPDATE audio_urls SET status='pending' WHERE status='downloading'")
+        recovered = conn.total_changes - before
+        conn.commit()
+        return recovered
 
     # ── URL 管理 ──
 
@@ -179,6 +188,7 @@ class Storage:
         per_category: bool = False,
         published_since: str | None = None,
         published_before: str | None = None,
+        host_max_share: float = 0.0,
     ) -> list[dict]:
         conn = self._get_conn()
 
@@ -206,11 +216,120 @@ class Storage:
             params.append(published_before)
 
         where = " AND ".join(conditions)
+        if host_max_share > 0:
+            return self._get_pending_spread_hosts(
+                where=where,
+                params=params,
+                limit=limit,
+                host_max_share=host_max_share,
+            )
+
         params.append(limit)
         rows = conn.execute(
             f"SELECT * FROM audio_urls WHERE {where} ORDER BY id LIMIT ?", params
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def _get_pending_spread_hosts(
+        self,
+        where: str,
+        params: list,
+        limit: int,
+        host_max_share: float,
+    ) -> list[dict]:
+        """限制单批单域名占比，并将不同域名的任务轮询交错。"""
+        conn = self._get_conn()
+        host_limit = max(1, min(limit, round(limit * host_max_share)))
+        scan_chunk = max(5000, limit * 2)
+        scan_limit = max(50000, limit * 20)
+        buckets: dict[str, deque] = {}
+        overflow = []
+        selected_count = 0
+        scanned = 0
+        cursor = 0
+
+        while scanned < scan_limit and selected_count < limit:
+            chunk_limit = min(scan_chunk, scan_limit - scanned)
+            rows = conn.execute(
+                f"SELECT * FROM audio_urls WHERE {where} AND id > ? "
+                "ORDER BY id LIMIT ?",
+                (*params, cursor, chunk_limit),
+            ).fetchall()
+            if not rows:
+                break
+
+            cursor = rows[-1]["id"]
+            scanned += len(rows)
+            for row in rows:
+                host = urlparse(row["url"]).netloc.lower() or "(unknown)"
+                bucket = buckets.setdefault(host, deque())
+                if len(bucket) < host_limit:
+                    bucket.append(row)
+                    selected_count += 1
+                elif len(overflow) < limit:
+                    overflow.append(row)
+
+        if selected_count < limit:
+            for row in overflow:
+                host = urlparse(row["url"]).netloc.lower() or "(unknown)"
+                buckets.setdefault(host, deque()).append(row)
+                selected_count += 1
+                if selected_count >= limit:
+                    break
+
+        mixed = []
+        active_hosts = deque(host for host, bucket in buckets.items() if bucket)
+        while active_hosts and len(mixed) < limit:
+            host = active_hosts.popleft()
+            bucket = buckets[host]
+            mixed.append(dict(bucket.popleft()))
+            if bucket:
+                active_hosts.append(host)
+
+        return mixed
+
+    def get_pending_after_id(
+        self,
+        after_id: int,
+        through_id: int,
+        limit: int = 1000,
+        source: str | None = None,
+        category: str | None = None,
+        language: str | None = None,
+        published_since: str | None = None,
+        published_before: str | None = None,
+    ) -> list[dict]:
+        """按主键游标增量扫描 pending 记录。"""
+        conn = self._get_conn()
+        conditions = ["status='pending'", "id > ?", "id <= ?"]
+        params: list = [after_id, through_id]
+        if source:
+            conditions.append("source=?")
+            params.append(source)
+        if category:
+            conditions.append("category=?")
+            params.append(category)
+        if language:
+            conditions.append("language=?")
+            params.append(language)
+        if published_since:
+            conditions.append("published_at >= ?")
+            params.append(published_since)
+        if published_before:
+            conditions.append("published_at <= ?")
+            params.append(published_before)
+
+        where = " AND ".join(conditions)
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT * FROM audio_urls WHERE {where} ORDER BY id LIMIT ?", params
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_max_audio_id(self) -> int:
+        conn = self._get_conn()
+        row = conn.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM audio_urls").fetchone()
+        return int(row["max_id"])
 
     def _get_pending_per_group(self, group_col: str, limit_per_group: int,
                                published_since: str | None = None,
@@ -251,20 +370,27 @@ class Storage:
             conn.execute("UPDATE audio_urls SET status=? WHERE url=?", (status, url))
         conn.commit()
 
-    def get_failed(self, limit: int = 50, source: str | None = None) -> list[dict]:
-        """获取 failed 状态的 URL，可按来源过滤"""
+    def get_failed(
+        self,
+        limit: int = 50,
+        source: str | None = None,
+        language: str | None = None,
+    ) -> list[dict]:
+        """获取 failed 状态的 URL，可按来源和语言过滤。"""
         conn = self._get_conn()
+        conditions = ["status='failed'"]
+        params: list = []
         if source:
-            rows = conn.execute(
-                "SELECT * FROM audio_urls WHERE status='failed' AND source=? "
-                "ORDER BY id LIMIT ?",
-                (source, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM audio_urls WHERE status='failed' ORDER BY id LIMIT ?",
-                (limit,),
-            ).fetchall()
+            conditions.append("source=?")
+            params.append(source)
+        if language:
+            conditions.append("language=?")
+            params.append(language)
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT * FROM audio_urls WHERE {' AND '.join(conditions)} ORDER BY id LIMIT ?",
+            params,
+        ).fetchall()
         return [dict(r) for r in rows]
 
     def set_content_hash(self, url: str, content_hash: str):
@@ -334,18 +460,20 @@ class Storage:
         print(f"  {'下载中:':<12} {stats.get('downloading', 0)}")
         print(f"  {'已完成:':<12} {stats.get('done', 0)}")
         print(f"  {'失败:':<12} {stats.get('failed', 0)}")
+        print(f"  {'重试后失败:':<12} {stats.get('retry_failed', 0)}")
 
         by_source = stats.get("by_source", {})
         if by_source:
             print("  " + "─" * 58)
-            print(f"  {'来源':<16} {'待下载':>6} {'已完成':>6} {'失败':>6}")
+            print(f"  {'来源':<16} {'待下载':>6} {'已完成':>6} {'失败':>6} {'重试失败':>8}")
             print("  " + "─" * 58)
             for src in sorted(by_source):
                 s = by_source[src]
                 pending = s.get("pending", 0)
                 done = s.get("done", 0)
                 failed = s.get("failed", 0)
-                print(f"  {src:<16} {pending:>6} {done:>6} {failed:>6}")
+                retry_failed = s.get("retry_failed", 0)
+                print(f"  {src:<16} {pending:>6} {done:>6} {failed:>6} {retry_failed:>8}")
 
         downloaded = self.get_downloaded_files(10)
         if downloaded:

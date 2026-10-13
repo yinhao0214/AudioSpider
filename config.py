@@ -2,6 +2,17 @@
 
 import os
 
+
+def _normalize_proxy_env():
+    """为 aiohttp 规范化系统代理地址，保留 NO_PROXY 的系统行为。"""
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        value = os.environ.get(name, "").strip()
+        if value and "://" not in value:
+            os.environ[name] = f"http://{value}"
+
+
+_normalize_proxy_env()
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
